@@ -1,7 +1,7 @@
 import { fail, guard, ok, readJson } from "@/lib/server/api";
 import { benchmarks } from "@/lib/guidellm/runner";
 import { supervisor } from "@/lib/vllm/supervisor";
-import { getSettings } from "@/lib/settings";
+import { baseUrl } from "@/lib/vllm/host";
 import type { BenchmarkConfig } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -25,7 +25,9 @@ export async function POST(req: Request) {
       if (live.status !== "healthy") {
         return fail(`${live.name} is not ready yet (${live.status}).`, 409);
       }
-      config.target = `http://${getSettings().serveHost}:${live.port}`;
+      // The run's own bind address, resolved to something dialable: a wildcard
+      // bind is not a destination, so `http://0.0.0.0:8000` would never connect.
+      config.target = baseUrl(live.host, live.port);
       config.model = live.servedName ?? live.model;
     }
 

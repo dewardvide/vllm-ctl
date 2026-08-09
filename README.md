@@ -26,7 +26,9 @@ navigation.](docs/images/07-dashboard-under-load.png)
 
 > **This app has no authentication.** It starts processes and deletes files on
 > your machine. It binds to `127.0.0.1` and is meant for one trusted user on one
-> workstation. Do not expose it to a network.
+> workstation. Do not expose it to a network. Deployments bind to `127.0.0.1`
+> too, until you change `serveHost` in Settings — which serves your models to
+> the network, unauthenticated unless you pass `--api-key`.
 
 ---
 
@@ -184,7 +186,7 @@ hand.
 | `cudaHome` | auto-detected | Passed to deployments as `CUDA_HOME`; vLLM needs `nvcc` here |
 | `hfCacheDir` | `~/.cache/huggingface/hub` | Honours `HF_HUB_CACHE` / `HF_HOME` |
 | `hfToken` | from `hf` CLI | Only needed for gated repos |
-| `serveHost` | `127.0.0.1` | Changing this exposes your models to the network |
+| `serveHost` | `127.0.0.1` | The address deployments bind to. Changing this exposes your models to the network |
 | `portRangeStart` / `End` | 8000 / 8099 | Ports handed to deployments |
 | `sampleIntervalMs` | 1000 | Telemetry rate |
 | `telemetryRetentionHours` | 72 | Older samples are pruned on boot |

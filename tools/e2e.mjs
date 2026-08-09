@@ -72,17 +72,29 @@ const api = async (route, init) => {
 };
 
 /**
+ * The address to dial for a server bound to `bindHost`. Mirrors `connectHost`
+ * in src/lib/vllm/host.ts — a wildcard bind is not a connectable destination.
+ */
+function connectHost(bindHost) {
+  const h = (bindHost ?? "").trim();
+  if (h === "" || h === "0.0.0.0") return "127.0.0.1";
+  if (h === "::" || h === "[::]") return "[::1]";
+  return !h.startsWith("[") && h.includes(":") ? `[${h}]` : h;
+}
+
+/**
  * Real inference traffic, so the engine panels show non-zero rates rather than
  * a screenshot of an idle server.
  */
-function driveLoad(port, servedName, { seconds = 45, concurrency = 4 } = {}) {
+function driveLoad(host, port, servedName, { seconds = 45, concurrency = 4 } = {}) {
+  const target = `http://${connectHost(host)}:${port}`;
   const stopAt = Date.now() + seconds * 1000;
   let sent = 0;
   let failed = 0;
   const worker = async () => {
     while (Date.now() < stopAt) {
       try {
-        const res = await fetch(`http://127.0.0.1:${port}/v1/completions`, {
+        const res = await fetch(`${target}/v1/completions`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -184,11 +196,13 @@ try {
     new TextDecoder().decode(value).split("data: ")[1].split("\n")[0],
   );
   const deployment = state.live.find((d) => d.status === "healthy");
-  log(`serving on :${deployment.port} as ${deployment.servedName}`);
+  log(`serving on ${deployment.host}:${deployment.port} as ${deployment.servedName}`);
 
   /* --------------------------------------------------------- 5. under load */
   log("driving real inference for the metrics panels");
-  const load = driveLoad(deployment.port, deployment.servedName, { seconds: 50 });
+  const load = driveLoad(deployment.host, deployment.port, deployment.servedName, {
+    seconds: 50,
+  });
 
   await page.waitForTimeout(18000);
   await page.goto(`${BASE}/`, { waitUntil: "networkidle" });

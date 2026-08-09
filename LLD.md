@@ -75,7 +75,7 @@ tested alone.
 | Module | Responsibility |
 |---|---|
 | `lib/paths.ts` | Every filesystem location, resolved once. All app state lives under `~/.vllm-admin` so the install can be wiped with one `rm -rf`. |
-| `lib/settings.ts` | User settings as JSON (repairable by hand when a bad path stops the app booting), plus environment auto-detection. |
+| `lib/settings.ts` | User settings as JSON (repairable by hand when a bad path stops the app booting), plus environment auto-detection. The read cache is keyed on the file's mtime — see §6. |
 | `lib/server/db.ts` | `better-sqlite3` handle, WAL mode, forward-only migrations keyed on `user_version`. |
 | `lib/server/broadcast.ts` | SSE fan-out hub and the `sseResponse()` helper. |
 | `lib/server/ring-buffer.ts` | Fixed-capacity circular buffer. |
@@ -86,6 +86,7 @@ tested alone.
 | `lib/vllm/parse-help.ts` | Parses `vllm serve --help=all` into a typed schema. |
 | `lib/vllm/flag-schema.ts` | Runs vLLM to get that help text; caches per version. |
 | `lib/vllm/argv.ts` | Builds and parses `vllm serve` command lines. |
+| `lib/vllm/host.ts` | Bind host vs. connect host; the one place a wildcard becomes a dialable address. |
 | `lib/vllm/supervisor.ts` | Process registry and lifecycle FSM. |
 | `lib/vllm/log-ring.ts` | Bounded per-process log storage and line splitting. |
 | `lib/vllm/phase.ts` | Turns vLLM log lines into phase labels and fatal-error messages. |
@@ -200,6 +201,11 @@ supervisor spawns. There is no second code path, so the preview cannot lie.
 `parseServeCommand()` is its inverse, letting an existing shell command be
 imported into the form.
 
+The invariant is only as good as its inputs: the preview once hardcoded
+`--host 127.0.0.1` while the supervisor passed the configured `serveHost`, so
+the two disagreed for anyone who changed the bind address. The form now reads
+that setting like the supervisor does.
+
 **Essentials tier.** A curated list is lifted above the groups and sorted in
 reach-for order, not alphabetically. Names a given vLLM build lacks are simply
 not marked, so the tier degrades on upgrade rather than breaking. (0.26 dropped
@@ -238,6 +244,34 @@ a long start reads as progress.
 
 **Only `/health` grants `healthy`.** A log line may promote `starting` →
 `loading`, but never claims readiness; only a real HTTP 200 does.
+
+**Bind host and connect host are different things.** `serveHost` is what
+`vllm serve --host` receives; it is recorded per run on the supervised record
+(not read from settings on demand, so a setting changed mid-flight cannot
+rewrite the history of a process already listening elsewhere) and surfaced on
+`LiveDeployment.host`, which is what the endpoint readout displays. Everything
+that *dials* the engine — the health probe, the metrics scrape, the benchmark
+target — goes through `connectHost()` in `lib/vllm/host.ts`, because a wildcard
+bind is not a destination: `http://0.0.0.0:8000` never connects, so it collapses
+to loopback. Probing loopback unconditionally, as an earlier version did, worked
+by luck for `0.0.0.0` and failed outright for a specific LAN address — the
+engine served fine while the app declared it dead at the ready timeout.
+`isPortBusy()` listens on the bind host for the same reason: a port free on
+loopback can still be taken on the interface vLLM is about to claim.
+
+**A saved setting has to reach the process that acts on it.** `getSettings()`
+caches the parsed file in a module-level variable, and `saveSettings()` used to
+keep it coherent by calling `invalidateSettings()` from the settings route. That
+is not enough: Next's production build instantiates `lib/settings.ts` more than
+once — route handlers land in separate server bundles — so each copy holds its
+own cache and the invalidation only ever clears the one in the settings route.
+A bind address changed in the UI was therefore visible to `GET /api/settings`
+while the deployment route kept launching on whatever host it happened to read
+first, which is exactly how a server ends up on `127.0.0.1` after the setting
+says `0.0.0.0`. The cache is now keyed on the settings file's mtime and size, so
+a write by any instance is picked up by all of them — and by a hand edit to the
+file, which the design invites. Verified with a specific LAN address, the case
+that fails loudest.
 
 **Fatal-error translation.** Known failure signatures are turned into an
 actionable sentence rather than a Python traceback — CUDA OOM becomes "Out of
@@ -543,6 +577,8 @@ against captured real-world fixtures rather than invented ones.
 | `vllm/prometheus.test.ts` | vLLM-shaped exposition text | label parsing with embedded commas, histogram quantile interpolation and monotonicity, `+Inf` handling, counter-reset behaviour, windowed deltas |
 | `vram/estimate.test.ts` | granite-4.1-8b ground truth | 160 KiB/token, 15.6 GiB weights, fp8 KV doubling context, quantization savings, tensor-parallel division, fail-closed on unknown models |
 | `guidellm/guidellm.test.ts` | a real 0.7.3 report from `guidellm mock-server` | argv for every profile/data/constraint, seconds→ms conversion, saturation-point detection, malformed-report tolerance |
+| `vllm/host.test.ts` | bind addresses | wildcard → loopback for v4 and v6, bare IPv6 bracketing, every spelling of loopback for the exposure warning |
+| `settings.test.ts` | a temporary data dir | defaults written on first run, and a write by one module instance being seen by another — the staleness that let a changed bind address go unused |
 
 The supervisor is not unit-tested against a real 16 GiB model load; it was
 verified end-to-end instead (section 15).
@@ -553,7 +589,7 @@ Run: `npm test` · `npm run typecheck` · `npm run lint`.
 
 ## 15. Verification performed
 
-Static checks: clean production build (30 routes), 104 passing tests, clean
+Static checks: clean production build (30 routes), 118 passing tests, clean
 `tsc --noEmit` and `eslint`.
 
 ### End-to-end, against a real served model
@@ -601,6 +637,25 @@ Things only a real launch surfaced, all fixed:
   the splitter now normalises `\r` → `\n`.
 - **Colour-by-magnitude on autoscaled traces** was meaningless (section 13).
 
+### Bind address, verified on both wildcard and LAN address
+
+The bind-address work (§6) was verified the same way, driving the real UI:
+
+| Bind address | Preview | Socket (`ss -tlnp`) | Endpoint readout | Reached `healthy` | Metrics |
+|---|---|---|---|---|---|
+| `0.0.0.0` | `--host 0.0.0.0` | `0.0.0.0:8000` | `0.0.0.0:8000` | yes | yes |
+| `192.168.0.70` | `--host 192.168.0.70` | `192.168.0.70:8000` | `192.168.0.70:8000` | yes | yes |
+
+The LAN-address row is the one that matters: `curl http://127.0.0.1:8000/health`
+gets nothing (the engine is not on loopback) while `http://192.168.0.70:8000`
+answers 200 and the app tracks it correctly. Before the fix the deployment sat
+in `loading` until the ready timeout killed a perfectly healthy engine. With
+`0.0.0.0`, a benchmark started against the run recorded its target as
+`http://127.0.0.1:8000` rather than the unusable `http://0.0.0.0:8000`.
+
+Both runs also confirmed the settings-cache fix: the launch used the address
+saved moments earlier, from a route other than the one that saved it.
+
 ### Earlier partial verification
 
 Before the CUDA toolchain was aligned, a `granite-4.1-8b` launch confirmed the
@@ -614,9 +669,11 @@ and VRAM returned to baseline.
 
 ## 16. Known limitations
 
-- **No authentication.** The app binds to loopback and assumes a single trusted
-  user. It must not be exposed to a network. vLLM endpoints it starts are
-  equally unauthenticated unless `--api-key` is set.
+- **No authentication.** The app itself binds to loopback and assumes a single
+  trusted user. It must not be exposed to a network. Deployments bind to
+  `serveHost`, which can be widened to `0.0.0.0` or a specific interface —
+  Settings warns whenever that is not a loopback address, because the vLLM
+  endpoints it starts are unauthenticated unless `--api-key` is set.
 - **Latency percentiles from `/metrics` are approximations** bounded by vLLM's
   histogram buckets. Benchmarks measure directly.
 - **VRAM estimates are estimates.** vLLM's allocator also holds CUDA graphs,
