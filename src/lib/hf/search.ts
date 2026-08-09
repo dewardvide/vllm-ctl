@@ -3,6 +3,8 @@ import "server-only";
 import { effectiveHfToken, getSettings } from "@/lib/settings";
 import type { HubSearchResult, ModelArchInfo } from "@/lib/types";
 
+import { effectiveBytesPerWeight } from "@/lib/vram/estimate";
+
 import { parseModelConfig, scanCache } from "./cache";
 
 /** Hugging Face Hub API client — search, metadata, and config lookup. */
@@ -123,6 +125,7 @@ export async function getModelDetail(repoId: string): Promise<HubModelDetail> {
     .reduce((a, f) => a + (f.size ?? 0), 0);
 
   const config = await fetchConfig(repoId).catch(() => null);
+  if (config && !config.weightBytes && weightBytes > 0) config.weightBytes = weightBytes;
   const cached = new Set((await scanCache()).map((r) => r.repoId));
 
   return {
@@ -166,11 +169,14 @@ export async function fetchConfig(repoId: string): Promise<ModelArchInfo | null>
       const idx = (await idxRes.json()) as {
         metadata?: { total_parameters?: number; total_size?: number };
       };
+      // Measured weight bytes are what the VRAM estimate wants; the parameter
+      // count is only displayed, and deriving it must account for quantization.
+      if (idx.metadata?.total_size) arch.weightBytes = idx.metadata.total_size;
       if (idx.metadata?.total_parameters) {
         arch.numParams = idx.metadata.total_parameters;
       } else if (idx.metadata?.total_size) {
-        const bpw = arch.torchDtype === "float32" ? 4 : 2;
-        arch.numParams = Math.round(idx.metadata.total_size / bpw);
+        const bpw = effectiveBytesPerWeight(arch);
+        arch.numParams = bpw > 0 ? Math.round(idx.metadata.total_size / bpw) : null;
       }
     }
   } catch {

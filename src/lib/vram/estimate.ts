@@ -46,6 +46,10 @@ export const QUANT_BYTES: Record<string, number> = {
   gptq_marlin: 0.55,
   int8: 1.05,
   modelopt: 1.05,
+  // MXFP4: 4-bit elements plus one 8-bit shared scale per 32, so 4.25 bits.
+  mxfp4: 0.53,
+  nvfp4: 0.55,
+  fp4: 0.53,
 };
 
 export interface EstimateInput {
@@ -76,6 +80,15 @@ function bytesPerWeight(dtype: string, quantization: string | null): number {
     if (q) return q;
   }
   return DTYPE_BYTES[dtype.toLowerCase()] ?? 2;
+}
+
+/**
+ * Effective bytes per weight for a checkpoint, from its quantization if it has
+ * one and otherwise its dtype. Shared with the cache reader, which uses it to
+ * turn a measured file size back into a parameter count.
+ */
+export function effectiveBytesPerWeight(arch: ModelArchInfo): number {
+  return bytesPerWeight(arch.torchDtype ?? "bfloat16", arch.quantization);
 }
 
 function resolveDtype(requested: string, arch: ModelArchInfo): string {
@@ -152,9 +165,17 @@ export function estimateVram(input: EstimateInput): VramEstimate {
   const params = estimateParamCount(arch);
   const bpw = bytesPerWeight(dtype, arch.quantization);
 
+  // Measured beats derived. Inferring weight size from a parameter count means
+  // guessing the effective width of the checkpoint's quantization, which is
+  // where a format the app has not seen goes wrong.
   let weightsGiB = 0;
-  if (params) {
+  let weightsKnown = false;
+  if (arch.weightBytes) {
+    weightsGiB = arch.weightBytes / GIB / tp;
+    weightsKnown = true;
+  } else if (params) {
     weightsGiB = (params * bpw) / GIB / tp;
+    weightsKnown = true;
   } else {
     notes.push("Parameter count unknown — weight size could not be estimated.");
   }
@@ -183,7 +204,7 @@ export function estimateVram(input: EstimateInput): VramEstimate {
   const activationOverheadGiB = 1.2;
 
   // An estimate missing either component is not an estimate.
-  const known = params !== null && kvPerTokenBytes !== null;
+  const known = weightsKnown && kvPerTokenBytes !== null;
 
   const totalGiB = weightsGiB + kvAtContextGiB + activationOverheadGiB;
 

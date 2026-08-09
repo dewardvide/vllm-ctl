@@ -292,9 +292,20 @@ documented in the machine's existing `serve.py`: 40 layers, GQA 32/8,
 `head_dim` 128 → **160 KiB/token** and **~15.6 GiB** of bf16 weights. Both are
 asserted in `src/lib/vram/estimate.test.ts`.
 
-Parameter counts come from `model.safetensors.index.json` when present
-(`total_parameters`, else `total_size ÷ bytes-per-weight`), then from weight
-file sizes, then from a shape-derived estimate as a last resort.
+**Weight size is measured, not derived.** `model.safetensors.index.json` states
+`total_size`, and failing that the weight files are stat-ed. Deriving weight
+size from a parameter count instead means guessing the effective bytes-per-weight
+of whatever quantization the checkpoint uses — precisely what breaks on a format
+the app has not seen. `gpt-oss-20b` (MXFP4 MoE) is the case that exposed this:
+an unknown format fell back to 2 bytes/param, and the parameter count was itself
+derived by dividing by that same wrong figure, so two errors cancelled into a
+right-looking answer for the wrong reason.
+
+Parameter count is now a *display-only* figure, derived from measured bytes
+divided by the format's effective width. It stays approximate for checkpoints
+that mix precisions — `gpt-oss-20b` reads as ~26B against a real 20.9B, because
+its MoE weights are MXFP4 while attention stays bf16 — but nothing depends on
+it. The VRAM estimate uses the measured bytes directly.
 
 **It fails closed.** If `config.json` doesn't give enough shape to size the
 model, the estimate is marked `known: false` and **never** reports `fits: true`.

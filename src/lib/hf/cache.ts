@@ -5,6 +5,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 
 import { getSettings } from "@/lib/settings";
+import { effectiveBytesPerWeight } from "@/lib/vram/estimate";
 import type { CachedRepo, CachedRevision, ModelArchInfo } from "@/lib/types";
 
 /**
@@ -328,6 +329,7 @@ export function parseModelConfig(raw: RawConfig): ModelArchInfo {
     architectures: cfg.architectures ?? [],
     modelType: cfg.model_type ?? null,
     numParams: null,
+    weightBytes: null,
     numHiddenLayers: layers,
     hiddenSize: hidden,
     numAttentionHeads: heads,
@@ -351,7 +353,9 @@ export async function readCachedConfig(repoId: string): Promise<ModelArchInfo | 
         await fsp.readFile(path.join(rev.snapshotPath, "config.json"), "utf8"),
       );
       const arch = parseModelConfig(raw);
-      arch.numParams = await countParamsFromIndex(rev.snapshotPath, arch);
+      const measured = await measureWeights(rev.snapshotPath);
+      arch.weightBytes = measured;
+      arch.numParams = await countParams(rev.snapshotPath, arch, measured);
       return arch;
     } catch {
       continue;
@@ -361,42 +365,61 @@ export async function readCachedConfig(repoId: string): Promise<ModelArchInfo | 
 }
 
 /**
- * Derives the true parameter count from the safetensors index when it is
- * present, which beats any shape-based estimate.
+ * Total bytes of weight files, from the safetensors index when present and
+ * otherwise by measuring the files.
+ *
+ * This is the figure the VRAM estimate actually wants. Deriving weight size
+ * from a parameter count means guessing the effective bytes-per-weight of the
+ * checkpoint's quantization, which is exactly the thing that goes wrong on a
+ * format the app has not seen before.
  */
-async function countParamsFromIndex(
-  snapshotPath: string,
-  arch: ModelArchInfo,
-): Promise<number | null> {
+async function measureWeights(snapshotPath: string): Promise<number | null> {
   try {
     const idx = JSON.parse(
       await fsp.readFile(path.join(snapshotPath, "model.safetensors.index.json"), "utf8"),
-    ) as { metadata?: { total_parameters?: number; total_size?: number } };
-
-    if (idx.metadata?.total_parameters) return idx.metadata.total_parameters;
-
-    if (idx.metadata?.total_size) {
-      // total_size is bytes; divide by the checkpoint's bytes-per-parameter.
-      const bpw =
-        arch.torchDtype && /(^|\D)(float32|fp32)$/i.test(arch.torchDtype) ? 4 : 2;
-      return Math.round(idx.metadata.total_size / bpw);
-    }
+    ) as { metadata?: { total_size?: number } };
+    if (idx.metadata?.total_size) return idx.metadata.total_size;
   } catch {
-    /* no index file — single-shard model, or a GGUF */
+    /* single-shard model, or a format with no index */
   }
 
-  // Fall back to the size of the weight files on disk.
   try {
     const files = await fsp.readdir(snapshotPath);
-    const weights = files.filter((f) => /\.safetensors$|\.bin$/.test(f));
+    const weights = files.filter((f) => /\.(safetensors|bin|gguf)$/.test(f));
     if (weights.length === 0) return null;
     let bytes = 0;
     for (const f of weights) {
       bytes += (await fsp.stat(path.join(snapshotPath, f))).size;
     }
-    const bpw = arch.quantization ? 0.6 : arch.torchDtype === "float32" ? 4 : 2;
-    return Math.round(bytes / bpw);
+    return bytes > 0 ? bytes : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * Parameter count, stated if the index says so and otherwise derived from the
+ * measured weight size divided by the format's effective width.
+ *
+ * The division has to be quantization-aware: assuming bf16 for an mxfp4
+ * checkpoint under-reports gpt-oss-20b as 6.9B parameters. This figure is only
+ * displayed — the VRAM estimate uses the measured bytes directly.
+ */
+async function countParams(
+  snapshotPath: string,
+  arch: ModelArchInfo,
+  weightBytes: number | null,
+): Promise<number | null> {
+  try {
+    const idx = JSON.parse(
+      await fsp.readFile(path.join(snapshotPath, "model.safetensors.index.json"), "utf8"),
+    ) as { metadata?: { total_parameters?: number } };
+    if (idx.metadata?.total_parameters) return idx.metadata.total_parameters;
+  } catch {
+    /* fall through */
+  }
+
+  if (weightBytes == null) return null;
+  const bpw = effectiveBytesPerWeight(arch);
+  return bpw > 0 ? Math.round(weightBytes / bpw) : null;
 }

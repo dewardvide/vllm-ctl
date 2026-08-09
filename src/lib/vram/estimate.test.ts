@@ -12,6 +12,7 @@ const GRANITE: ModelArchInfo = {
   architectures: ["GraniteForCausalLM"],
   modelType: "granite",
   numParams: 8.4e9,
+  weightBytes: null,
   numHiddenLayers: 40,
   hiddenSize: 4096,
   numAttentionHeads: 32,
@@ -144,6 +145,7 @@ describe("estimateVram", () => {
       architectures: [],
       modelType: null,
       numParams: null,
+      weightBytes: null,
       numHiddenLayers: null,
       hiddenSize: null,
       numAttentionHeads: null,
@@ -164,6 +166,50 @@ describe("estimateVram", () => {
 
   it("marks a fully-specified model as known", () => {
     expect(estimateVram({ arch: GRANITE, ...base }).known).toBe(true);
+  });
+});
+
+describe("measured weight bytes", () => {
+  it("prefers a measured size over one derived from a parameter count", () => {
+    // 20 GiB of weights with a deliberately misleading parameter count: if the
+    // estimate were derived, it would report ~15.6 GiB instead.
+    const measured = estimateVram({
+      arch: { ...GRANITE, weightBytes: 20 * 1024 ** 3 },
+      ...base,
+    });
+    expect(measured.weightsGiB).toBeCloseTo(20, 1);
+  });
+
+  it("sizes an mxfp4 MoE from its files rather than guessing the format", () => {
+    // gpt-oss-20b as it exists on disk: 13.76 GB of mxfp4 weights, a shape that
+    // implies nothing useful about the real parameter count.
+    const gptOss: ModelArchInfo = {
+      architectures: ["GptOssForCausalLM"],
+      modelType: "gpt_oss",
+      numParams: null,
+      weightBytes: 13_761_264_768,
+      numHiddenLayers: 24,
+      hiddenSize: 2880,
+      numAttentionHeads: 64,
+      numKeyValueHeads: 8,
+      headDim: 64,
+      vocabSize: 201088,
+      maxPositionEmbeddings: 131072,
+      torchDtype: null,
+      quantization: "mxfp4",
+      slidingWindow: 128,
+    };
+    const e = estimateVram({ arch: gptOss, ...base });
+    expect(e.known).toBe(true);
+    expect(e.weightsGiB).toBeCloseTo(12.8, 1);
+    expect(e.fits).toBe(true);
+    expect(e.notes.join(" ")).toMatch(/sliding-window/i);
+  });
+
+  it("still estimates from parameters when nothing was measured", () => {
+    const e = estimateVram({ arch: { ...GRANITE, weightBytes: null }, ...base });
+    expect(e.weightsGiB).toBeGreaterThan(15.3);
+    expect(e.known).toBe(true);
   });
 });
 

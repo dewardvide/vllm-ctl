@@ -186,6 +186,12 @@ export interface ModelArchInfo {
   architectures: string[];
   modelType: string | null;
   numParams: number | null;
+  /**
+   * Total bytes of weight files, when they can be measured rather than
+   * inferred. Preferred over `numParams × bytes-per-weight`, which requires
+   * guessing the effective width of whatever quantization was used.
+   */
+  weightBytes: number | null;
   numHiddenLayers: number | null;
   hiddenSize: number | null;
   numAttentionHeads: number | null;
