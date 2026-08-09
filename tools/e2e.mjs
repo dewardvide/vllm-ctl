@@ -218,6 +218,20 @@ try {
   await load.done;
   log(`load finished: ${JSON.stringify(load.stats())}`);
 
+  /* ------------------------------------------------------------ 5b. chat */
+  // Driven through the UI rather than the API, so the screenshot proves the
+  // panel streams and reports timings — not merely that the route works.
+  log("chat panel — a real exchange with the deployment");
+  const box = page.getByLabel("message");
+  await box.fill("In one sentence, what is paged attention?");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(
+    () => !document.body.innerText.includes("waiting for the first token"),
+    { timeout: 60_000 },
+  );
+  await page.waitForTimeout(6000); // let the reply finish and timings settle
+  await shot(page, "08b-chat");
+
   /* ---------------------------------------------------------- 6. benchmark */
   log("benchmark run builder");
   await page.goto(`${BASE}/benchmarks/new`, { waitUntil: "networkidle" });

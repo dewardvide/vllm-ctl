@@ -11,6 +11,7 @@ import { compact, fixed, ms, msUnit, sinceStr, timeOfDay } from "@/lib/format";
 import { THERMAL } from "@/lib/thermal";
 import type { EngineMetrics } from "@/lib/types";
 import { Sparkline } from "@/components/charts/Sparkline";
+import { ChatPanel } from "@/components/deployments/ChatPanel";
 import {
   Button,
   Empty,
@@ -218,6 +219,11 @@ export function DeploymentDetail({ runId }: { runId: number }) {
           </p>
         </Panel>
       )}
+
+      {/* Between the engine panel and the log on purpose: a message sent here
+          shows up in both, and seeing all three at once is what makes this a
+          test instrument rather than a chat window. */}
+      <ChatPanel runId={runId} deployment={d} />
 
       <Panel
         label={`log · ${lines.length} lines`}
