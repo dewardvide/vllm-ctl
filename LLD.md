@@ -87,6 +87,7 @@ tested alone.
 | `lib/vllm/flag-schema.ts` | Runs vLLM to get that help text; caches per version. |
 | `lib/vllm/argv.ts` | Builds and parses `vllm serve` command lines. |
 | `lib/vllm/host.ts` | Bind host vs. connect host; the one place a wildcard becomes a dialable address. |
+| `lib/vllm/chat.ts` | The OpenAI chat-completions wire format as vLLM speaks it: request building and SSE frame parsing. Shared by the proxy route and the client hook. |
 | `lib/vllm/supervisor.ts` | Process registry and lifecycle FSM. |
 | `lib/vllm/log-ring.ts` | Bounded per-process log storage and line splitting. |
 | `lib/vllm/phase.ts` | Turns vLLM log lines into phase labels and fatal-error messages. |
@@ -108,6 +109,7 @@ tested alone.
 | `lib/client/telemetry-store.tsx` | Shared telemetry window for the whole page. |
 | `lib/client/deployments-store.tsx` | Live deployments, plus the *projection* used by the headroom rail. |
 | `lib/client/use-now.ts` | A clock in state, so elapsed times don't make render impure. |
+| `lib/client/use-chat.ts` | One chat exchange: POST, stream reading, per-reply timing, and the abort that cancels it. Not built on `use-sse.ts` — `EventSource` cannot POST. |
 | `lib/client/api.ts` | fetch wrapper that unwraps `{ error }`. |
 | `components/charts/Sparkline.tsx` | Canvas time-series for live data. |
 | `components/charts/XYChart.tsx` | SVG chart for static benchmark results. |
@@ -308,6 +310,27 @@ survived an unclean shutdown are signalled and their DB rows marked `crashed`.
 Re-adopting them is not possible — their stdout is gone — so killing them is the
 honest outcome; it keeps the headroom rail truthful.
 
+**Talking to a healthy deployment.** `/api/deployments/chat` proxies a chat
+completion to the run's own address, resolved through `baseUrl()` like every
+other engine call. The browser never dials the engine itself: `serveHost` is
+user-configurable, so the engine may be bound to an address the page cannot
+route to, and vLLM sends no CORS headers in any case — a direct fetch would
+fail in exactly the configurations the app already supports.
+
+Two details the proxy has to get right. The upstream fetch is passed the
+incoming `req.signal`, so pressing stop cancels the engine's request instead of
+leaving it generating into a closed socket — verified by watching
+`vllm:num_requests_running` drop to zero the instant the client disconnects. And
+a non-2xx upstream is read and re-emitted as the app's usual `{ error }` shape,
+because vLLM's own wording ("max_tokens=99999 cannot be greater than
+max_model_len…") is more useful than anything this app could substitute.
+
+`chat.ts` holds the wire format, pure and testable: unset sampling parameters
+are *omitted* rather than defaulted, so the panel measures the deployment's
+behaviour and not ours; and the SSE reader buffers across chunk boundaries,
+since a JSON frame split by TCP is the standard way to truncate a response and
+blame the model.
+
 ---
 
 ## 7. VRAM estimation and the guard rail
@@ -507,12 +530,18 @@ which is exactly the order every range query reads them in.
 
 ### Mutations
 
-`/api/deployments` (CRUD) · `/api/deployments/{start,stop,restart,history}` ·
+`/api/deployments` (CRUD) · `/api/deployments/{start,stop,restart,history,chat}` ·
 `/api/models/{cache,search,detail,download}` · `/api/vram` · `/api/flags` ·
 `/api/benchmarks` + `/api/benchmarks/[id]{,/cancel}` · `/api/settings`
 
 Model repo ids contain slashes, so `/api/models/detail` takes `?repo=` rather
 than a path segment.
+
+`/api/deployments/chat` is the only route that streams a response body without
+being an SSE topic: it pipes vLLM's own `text/event-stream` straight through
+(section 6). Like `start`, `stop` and `restart` it takes a **run** id in the
+body, not a path segment — the neighbouring `/api/deployments/[id]` addresses a
+saved *profile*, a different id space entirely.
 
 ---
 
@@ -568,7 +597,7 @@ flat categorical teal, and the ramp is reserved for series with a real maximum
 
 ## 14. Testing
 
-104 tests over the logic that carries real risk of being subtly wrong, all
+144 tests over the logic that carries real risk of being subtly wrong, all
 against captured real-world fixtures rather than invented ones.
 
 | Suite | Fixture | Covers |
@@ -578,6 +607,7 @@ against captured real-world fixtures rather than invented ones.
 | `vram/estimate.test.ts` | granite-4.1-8b ground truth | 160 KiB/token, 15.6 GiB weights, fp8 KV doubling context, quantization savings, tensor-parallel division, fail-closed on unknown models |
 | `guidellm/guidellm.test.ts` | a real 0.7.3 report from `guidellm mock-server` | argv for every profile/data/constraint, seconds→ms conversion, saturation-point detection, malformed-report tolerance |
 | `vllm/host.test.ts` | bind addresses | wildcard → loopback for v4 and v6, bare IPv6 bracketing, every spelling of loopback for the exposure warning |
+| `vllm/chat.test.ts` | frames copied verbatim from a live 0.26 chat stream | unset parameters omitted while a zero temperature survives, the role-only opening frame and empty stop frame ignored, the trailing usage frame read, reassembly of a JSON frame and a UTF-8 character split across chunks, error-body unwrapping |
 | `settings.test.ts` | a temporary data dir | defaults written on first run, and a write by one module instance being seen by another — the staleness that let a changed bind address go unused |
 
 The supervisor is not unit-tested against a real 16 GiB model load; it was
@@ -589,7 +619,7 @@ Run: `npm test` · `npm run typecheck` · `npm run lint`.
 
 ## 15. Verification performed
 
-Static checks: clean production build (30 routes), 118 passing tests, clean
+Static checks: clean production build (33 routes), 144 passing tests, clean
 `tsc --noEmit` and `eslint`.
 
 ### End-to-end, against a real served model
@@ -656,6 +686,31 @@ in `loading` until the ready timeout killed a perfectly healthy engine. With
 Both runs also confirmed the settings-cache fix: the launch used the address
 saved moments earlier, from a route other than the one that saved it.
 
+### Chat panel, verified against a live engine
+
+The parser and the abort path cannot be trusted until they have met a real
+engine, so both were driven against `granite-4.1-8b` at 4,096 context.
+
+| Check | Result |
+|---|---|
+| Streaming is incremental | transcript grew 119 → 197 → 253 → 361 chars while sampled every 220 ms, rather than arriving as one blob |
+| Timings agree with the engine panel | TTFT 84 ms, 46.4 tok/s, 38 output / 18 prompt tokens |
+| Parameters reach the engine | temperature 0 with seed 7 returned byte-identical text on two runs |
+| Engine errors are legible | `max_tokens=99999 cannot be greater than max_model_len=max_total_tokens=4096…`, surfaced verbatim instead of "request failed" |
+| Console errors | none |
+
+**Abort, measured rather than assumed.** A 3,000-token request was cancelled
+after two seconds; `vllm:num_requests_running` read `0.0` within two seconds of
+the disconnect, against the ~65 s the generation would otherwise have taken. The
+control case — the same request left running — reads `1.0` throughout, so the
+metric is discriminating and not merely always zero. Without `signal` on the
+upstream fetch the engine would have finished generating into a closed socket.
+
+Two things the first screenshot caught that no assertion would have: the
+transcript reserved its maximum height up front, leaving a screen of empty panel
+under a two-line answer, and the `model` gutter nameplate overflowed its column
+so replies did not align with prompts.
+
 ### Earlier partial verification
 
 Before the CUDA toolchain was aligned, a `granite-4.1-8b` launch confirmed the
@@ -676,6 +731,13 @@ and VRAM returned to baseline.
   endpoints it starts are unauthenticated unless `--api-key` is set.
 - **Latency percentiles from `/metrics` are approximations** bounded by vLLM's
   histogram buckets. Benchmarks measure directly.
+- **Chat transcripts are not persisted.** They live in React state and end with
+  the page. The panel is an instrument for checking that a deployment answers
+  sensibly, not a chat client with history — persisting them would mean a schema,
+  a history list and a retention policy for something read once.
+- **The chat proxy sends no `--api-key`.** A deployment started with one will
+  reject the panel's requests with a 401. The route is the obvious single place
+  to add it, and the error is reported verbatim rather than swallowed.
 - **VRAM estimates are estimates.** vLLM's allocator also holds CUDA graphs,
   activation buffers and fragmentation that no static formula predicts exactly.
 - **A restart cannot re-adopt orphans.** Their stdout is unrecoverable, so they

@@ -12,7 +12,9 @@ Four things it does:
    fit in your VRAM *before* you try to run it.
 2. **Deployments** — start and stop vLLM servers with every one of its options
    exposed (274 on vLLM 0.26), a live command preview, and a guard rail that
-   stops you launching something that won't fit.
+   stops you launching something that won't fit. Each running deployment has a
+   chat panel for talking to it directly, with time-to-first-token and tokens
+   per second reported for every reply.
 3. **Telemetry** — GPU utilisation, VRAM, power, temperature and clocks at 1 Hz,
    alongside per-deployment engine metrics: tokens/sec, TTFT, inter-token
    latency, queue depth, KV cache pressure.
@@ -142,6 +144,28 @@ Open a running deployment for live logs, engine metrics and a config summary.
 
 ![A running deployment: engine metrics with live traces above, streaming vLLM
 logs below.](docs/images/08-deployment-detail.png)
+
+#### Talking to it
+
+Between the metrics and the log there's a chat panel, so you can check the thing
+actually answers — that the chat template applied, that the output is coherent,
+that it feels right at one request. Every reply reports its own
+time-to-first-token, tokens per second and token counts, measured in the
+browser, and the request shows up in the metrics above and the log below as you
+send it.
+
+Sampling parameters sit behind **parameters**: system prompt, temperature,
+top-p, max tokens, seed, and a streaming toggle. A field you leave blank is not
+sent at all, so the model's own generation config stays in charge — set
+temperature to 0 with a seed and the same prompt returns the same text twice,
+which is a quick way to prove your settings are reaching the engine.
+
+Requests are proxied through the app rather than sent from the browser, so the
+panel works whatever `serveHost` is set to. **Stop** cancels the engine's
+request, not just the display. Transcripts are not saved; reloading clears them.
+
+> A deployment started with `--api-key` will reject the panel with a 401 — the
+> proxy does not send the key.
 
 ### Benchmarks
 
@@ -299,7 +323,7 @@ killing them is the honest outcome. Check with `nvidia-smi` if VRAM looks wrong.
 
 ```bash
 npm run dev         # dev server
-npm test            # 104 tests
+npm test            # 144 tests
 npm run typecheck   # tsc --noEmit
 npm run lint
 npm run build
@@ -308,8 +332,9 @@ npm run build
 Tests cover the logic that is easy to get subtly wrong, against captured
 real-world fixtures: the vLLM `--help=all` parser, Prometheus histogram
 percentiles and counter rates, VRAM estimation (validated against measured
-figures for granite-4.1-8b), and GuideLLM command construction and result
-parsing (against a real report from `guidellm mock-server`).
+figures for granite-4.1-8b), GuideLLM command construction and result parsing
+(against a real report from `guidellm mock-server`), and the chat wire format
+(against frames copied verbatim from a live vLLM chat stream).
 
 Two Playwright tools drive the real app rather than a mock:
 
@@ -318,8 +343,9 @@ Two Playwright tools drive the real app rather than a mock:
 node tools/shot.mjs http://localhost:3000/ out.png 1440 900
 
 # Full walkthrough: configure a deployment in the UI, start it, wait for the
-# engine to become healthy, drive real inference, run a GuideLLM benchmark, and
-# capture a screenshot at every step. Needs the app already running.
+# engine to become healthy, drive real inference, hold a chat exchange with it,
+# run a GuideLLM benchmark, and capture a screenshot at every step. Needs the
+# app already running.
 node tools/e2e.mjs --model Qwen/Qwen3-0.6B --served qwen3-0.6b --out docs/images
 ```
 
