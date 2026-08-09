@@ -15,6 +15,7 @@ import {
   type HistogramSnapshot,
 } from "./prometheus";
 import { DEPLOYMENTS_TOPIC, supervisor } from "./supervisor";
+import { baseUrl } from "./host";
 
 /**
  * Polls each healthy deployment's Prometheus endpoint and turns raw counters
@@ -73,15 +74,19 @@ class MetricsPoller {
     let changed = false;
     await Promise.all(
       live.map(async (d) => {
-        const m = await this.pollOne(d.runId, d.port);
+        const m = await this.pollOne(d.runId, d.host, d.port);
         if (m) changed = true;
       }),
     );
     if (changed) supervisor().publish();
   }
 
-  private async pollOne(runId: number, port: number): Promise<EngineMetrics | null> {
-    const text = await scrape(port);
+  private async pollOne(
+    runId: number,
+    host: string,
+    port: number,
+  ): Promise<EngineMetrics | null> {
+    const text = await scrape(host, port);
     if (text === null) return null;
 
     const metrics = parsePrometheusText(text);
@@ -160,11 +165,11 @@ class MetricsPoller {
   }
 }
 
-async function scrape(port: number): Promise<string | null> {
+async function scrape(host: string, port: number): Promise<string | null> {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 2000);
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/metrics`, {
+    const res = await fetch(`${baseUrl(host, port)}/metrics`, {
       signal: ctl.signal,
       cache: "no-store",
     });

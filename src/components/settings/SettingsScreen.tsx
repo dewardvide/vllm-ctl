@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { api } from "@/lib/client/api";
 import { THERMAL } from "@/lib/thermal";
+import { isLoopback } from "@/lib/vllm/host";
 import { Button, Note, Panel, Problem, Readout } from "@/components/ui/primitives";
 
 interface Settings {
@@ -188,7 +189,7 @@ export function SettingsScreen() {
               />
             </label>
           </div>
-          {settings.serveHost !== "127.0.0.1" && (
+          {!isLoopback(settings.serveHost) && (
             <Note>
               Binding to {settings.serveHost} exposes your model endpoints to the network.
               vLLM has no authentication unless you set <code>--api-key</code>, and this

@@ -138,7 +138,7 @@ export function DeploymentDetail({ runId }: { runId: number }) {
             <span className="text-[14px] font-medium">{d.servedName ?? d.name}</span>
           </div>
           <Readout label="model" value={d.model} size="sm" />
-          <Readout label="endpoint" value={`127.0.0.1:${d.port}`} size="sm" />
+          <Readout label="endpoint" value={`${d.host}:${d.port}`} size="sm" />
           <Readout label="pid" value={d.pid ?? "—"} size="sm" />
           <Readout
             label="uptime"

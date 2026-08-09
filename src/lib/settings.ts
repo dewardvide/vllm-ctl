@@ -204,15 +204,47 @@ export function effectiveHfToken(s: Settings): string | null {
 /* -------------------------------------------------------------------------- */
 
 let cached: Settings | null = null;
+/** Identifies the revision of the file `cached` was read from. */
+let cachedStamp = "";
 
+/**
+ * A stamp that changes whenever the settings file does, empty when unreadable.
+ *
+ * Nanosecond precision matters: two writes inside the same millisecond would
+ * otherwise be indistinguishable, and the second one would go unnoticed.
+ */
+function settingsStamp(): string {
+  try {
+    const s = fs.statSync(PATHS.settings, { bigint: true });
+    return `${s.mtimeNs}:${s.size}`;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Reads the settings, re-reading whenever the file has changed on disk.
+ *
+ * The mtime check is not an optimisation — it is what makes a saved setting
+ * take effect. Next's production build can instantiate this module more than
+ * once (route handlers land in separate server bundles), so each copy has its
+ * own `cached`, and `invalidateSettings()` only ever clears the one running in
+ * the settings route. A bind address changed in the UI would then be visible to
+ * `GET /api/settings` while the deployment route happily kept launching on the
+ * host it happened to read first. Keying the cache on the file's mtime makes a
+ * write by any instance visible to all of them.
+ */
 export function getSettings(): Settings {
-  if (cached) return cached;
+  const stamp = settingsStamp();
+  if (cached && stamp !== "" && stamp === cachedStamp) return cached;
+
   fs.mkdirSync(PATHS.dataDir, { recursive: true });
   try {
     const raw = JSON.parse(fs.readFileSync(PATHS.settings, "utf8"));
     // Merge over defaults so a settings file written by an older version still
     // loads once new keys are added.
     cached = SettingsSchema.parse({ ...defaults(), ...raw });
+    cachedStamp = stamp;
   } catch {
     cached = defaults();
     writeSettings(cached);
@@ -230,9 +262,11 @@ export function saveSettings(patch: Partial<Settings>): Settings {
 function writeSettings(s: Settings) {
   fs.mkdirSync(PATHS.dataDir, { recursive: true });
   fs.writeFileSync(PATHS.settings, JSON.stringify(s, null, 2) + "\n");
+  cachedStamp = settingsStamp();
 }
 
 /** Drops the in-process cache. Used by tests and by the settings form. */
 export function invalidateSettings() {
   cached = null;
+  cachedStamp = "";
 }

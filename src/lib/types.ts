@@ -92,6 +92,8 @@ export interface LiveDeployment {
   name: string;
   model: string;
   servedName: string | null;
+  /** The address this run is bound to, as passed to `vllm serve --host`. */
+  host: string;
   port: number;
   pid: number | null;
   status: DeploymentStatus;

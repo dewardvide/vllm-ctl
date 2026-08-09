@@ -10,6 +10,7 @@ import { duration } from "@/lib/format";
 import type { BenchmarkConfig, DataKind, ProfileKind } from "@/lib/types";
 import { buildBenchmarkArgv, estimateRunSeconds } from "@/lib/guidellm/argv";
 import { formatCommand } from "@/lib/vllm/argv";
+import { baseUrl } from "@/lib/vllm/host";
 import { Button, Empty, Note, Panel, Problem } from "@/components/ui/primitives";
 
 /**
@@ -83,7 +84,7 @@ export function BenchmarkForm() {
   const config: BenchmarkConfig = {
     name: name.trim(),
     deploymentRunId: runId,
-    target: selected ? `http://127.0.0.1:${selected.port}` : "",
+    target: selected ? baseUrl(selected.host, selected.port) : "",
     model: selected ? (selected.servedName ?? selected.model) : null,
     profile: {
       kind: profile,

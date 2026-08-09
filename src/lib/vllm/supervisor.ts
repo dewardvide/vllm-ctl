@@ -15,6 +15,7 @@ import type { DeploymentStatus, LiveDeployment } from "@/lib/types";
 import { LogRing, LineSplitter, type LogLine } from "./log-ring";
 import { classifyLogLine } from "./phase";
 import { buildServeArgv, type LaunchSpec } from "./argv";
+import { baseUrl } from "./host";
 
 /**
  * Supervises `vllm serve` child processes.
@@ -40,6 +41,12 @@ interface Supervised {
   name: string;
   model: string;
   servedName: string | null;
+  /**
+   * The address this run was launched on. Held per run rather than read from
+   * settings on demand, so a bind address changed mid-flight cannot rewrite the
+   * history of a process that is already listening somewhere else.
+   */
+  host: string;
   port: number;
   proc: ChildProcess;
   status: DeploymentStatus;
@@ -71,12 +78,13 @@ class Supervisor {
       );
     }
 
+    const host = settings.serveHost;
     const port = spec.port ?? (await this.allocatePort());
-    if (await isPortBusy(port)) {
+    if (await isPortBusy(host, port)) {
       throw new Error(`Port ${port} is already in use.`);
     }
 
-    const argv = buildServeArgv(spec, { host: settings.serveHost, port });
+    const argv = buildServeArgv(spec, { host, port });
 
     const db = getDb();
     const now = Date.now();
@@ -136,6 +144,7 @@ class Supervisor {
       name: spec.name,
       model: spec.model,
       servedName: spec.servedName ?? null,
+      host,
       port,
       proc,
       status: "starting",
@@ -297,7 +306,7 @@ class Supervisor {
 
   private async pollHealth(sup: Supervised) {
     if (sup.status === "stopping" || sup.status === "stopped") return;
-    const ok = await probeHealth(sup.port);
+    const ok = await probeHealth(sup.host, sup.port);
     if (!ok) return;
 
     if (sup.status !== "healthy") {
@@ -388,6 +397,7 @@ class Supervisor {
         name: d.name,
         model: d.model,
         servedName: d.servedName,
+        host: d.host,
         port: d.port,
         pid: d.proc.pid ?? null,
         status: d.status,
@@ -430,11 +440,11 @@ class Supervisor {
   /* ---------------------------------------------------------------------- */
 
   async allocatePort(): Promise<number> {
-    const { portRangeStart, portRangeEnd } = getSettings();
+    const { portRangeStart, portRangeEnd, serveHost } = getSettings();
     const taken = new Set([...this.procs.values()].map((d) => d.port));
     for (let p = portRangeStart; p <= portRangeEnd; p++) {
       if (taken.has(p)) continue;
-      if (!(await isPortBusy(p))) return p;
+      if (!(await isPortBusy(serveHost, p))) return p;
     }
     throw new Error(
       `No free port in range ${portRangeStart}–${portRangeEnd}. Widen the range in Settings.`,
@@ -529,20 +539,33 @@ function killGroup(pid: number | undefined, signal: NodeJS.Signals) {
   }
 }
 
-export function isPortBusy(port: number): Promise<boolean> {
+/**
+ * Whether `vllm serve` would fail to bind this port.
+ *
+ * Probed on the same address vLLM will use: a port free on loopback can still
+ * be taken on another interface, and a wildcard bind collides with both.
+ */
+export function isPortBusy(host: string, port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const srv = net.createServer();
     srv.once("error", () => resolve(true));
     srv.once("listening", () => srv.close(() => resolve(false)));
-    srv.listen(port, "127.0.0.1");
+    srv.listen(port, bindTarget(host));
   });
 }
 
-async function probeHealth(port: number): Promise<boolean> {
+/** `listen` wants a bare address, and treats undefined as "every interface". */
+function bindTarget(host: string): string | undefined {
+  const h = host.trim();
+  if (h === "" || h === "0.0.0.0" || h === "::" || h === "[::]") return undefined;
+  return h.startsWith("[") && h.endsWith("]") ? h.slice(1, -1) : h;
+}
+
+async function probeHealth(host: string, port: number): Promise<boolean> {
   const ctl = AbortController ? new AbortController() : null;
   const timer = setTimeout(() => ctl?.abort(), 2000);
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/health`, {
+    const res = await fetch(`${baseUrl(host, port)}/health`, {
       signal: ctl?.signal,
       cache: "no-store",
     });

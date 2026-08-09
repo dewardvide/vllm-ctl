@@ -87,6 +87,22 @@ export function DeploymentForm() {
     void Promise.resolve().then(() => loadSchema());
   }, [loadSchema]);
 
+  /* --- bind address ------------------------------------------------------ */
+
+  // The preview must show the address this deployment will actually bind, so it
+  // comes from the same setting the supervisor reads rather than a hardcoded
+  // loopback. Loopback is only the placeholder until the fetch lands.
+  const [serveHost, setServeHost] = useState("127.0.0.1");
+
+  useEffect(() => {
+    api
+      .get<{ settings: { serveHost: string } }>("/api/settings")
+      .then((r) => setServeHost(r.settings.serveHost))
+      .catch(() => {
+        /* the preview falls back to loopback; the launch still uses the setting */
+      });
+  }, []);
+
   /* --- prefill from a saved profile or the models page ------------------- */
 
   useEffect(() => {
@@ -190,10 +206,10 @@ export function DeploymentForm() {
         servedName: servedName.trim() || null,
         flags: typedFlags,
       },
-      { host: "127.0.0.1", port: Number(port) || 8000 },
+      { host: serveHost, port: Number(port) || 8000 },
     );
     return formatCommand("vllm", argv);
-  }, [model, name, servedName, port, typedFlags]);
+  }, [model, name, servedName, port, typedFlags, serveHost]);
 
   /* --- actions ---------------------------------------------------------- */
 
