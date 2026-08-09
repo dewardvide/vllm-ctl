@@ -1,5 +1,7 @@
 import "server-only";
 
+import fs from "node:fs";
+
 import { RingBuffer } from "@/lib/server/ring-buffer";
 import { hub } from "@/lib/server/broadcast";
 import { getDb } from "@/lib/server/db";
@@ -128,12 +130,51 @@ class TelemetrySampler {
     return this.buffer.last();
   }
 
-  /** VRAM in MiB attributed to a given process, if it holds any. */
+  /**
+   * VRAM in MiB held by a process *or any of its descendants*.
+   *
+   * vLLM's API server does not touch the GPU itself — it forks a
+   * `VLLM::EngineCore` worker that owns every byte of the allocation. Matching
+   * only the pid we spawned therefore reports null for a deployment that is
+   * plainly using 10 GiB, so ancestry is walked instead.
+   */
   vramForPid(pid: number | null): number | null {
     if (pid == null) return null;
-    const app = this.computeApps.find((a) => a.pid === pid);
-    return app ? app.usedMiB : null;
+    let total = 0;
+    let found = false;
+    for (const app of this.computeApps) {
+      if (app.pid === pid || isDescendantOf(app.pid, pid)) {
+        total += app.usedMiB;
+        found = true;
+      }
+    }
+    return found ? total : null;
   }
+}
+
+/** Parent pid from /proc, or null when the process is gone. */
+function parentOf(pid: number): number | null {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+    // The comm field is parenthesised and may contain spaces, so fields are
+    // counted from after the closing paren: state, then ppid.
+    const after = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    const ppid = Number.parseInt(after[1], 10);
+    return Number.isFinite(ppid) ? ppid : null;
+  } catch {
+    return null;
+  }
+}
+
+function isDescendantOf(pid: number, ancestor: number): boolean {
+  let current = parentOf(pid);
+  // Bounded walk: pid 1 terminates it, and the depth guard protects against a
+  // pathological /proc read.
+  for (let depth = 0; current != null && current > 1 && depth < 24; depth++) {
+    if (current === ancestor) return true;
+    current = parentOf(current);
+  }
+  return false;
 }
 
 declare global {

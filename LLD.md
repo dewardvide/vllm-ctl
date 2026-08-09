@@ -20,6 +20,7 @@ The app targets a single workstation, not a cluster:
 | vLLM | 0.26.0, in a uv virtualenv (not on `PATH`) |
 | GuideLLM | 0.7.3, in an isolated `uv tool` environment |
 | Runtime | Node 22, Next.js 16 (App Router), React 19, Tailwind v4 |
+| CUDA | toolkit from torch's own wheels (`nvidia/cu13`), pinned to 13.0 to match `torch 2.11.0+cu130` |
 
 Three constraints shape everything below:
 
@@ -253,6 +254,21 @@ until they finish, so the splitter normalises `\r` → `\n`. Without this the lo
 sits silent for the entire weight download — exactly the phase a user wants to
 watch. (Found during end-to-end testing on a 13 GB download.)
 
+**The child's environment is not this process's environment.** Two things must
+be set up or the engine dies during initialisation, and both were found by
+running a real model rather than by reading code:
+
+- `PATH` gets the virtualenv's own `bin` prepended, exactly as `activate` would.
+  Spawning `vllm` by absolute path is not enough: it shells out to build tools
+  that live beside it — `ninja`, for torch's C++ extensions — and without this
+  they are invisible.
+- `CUDA_HOME` is set to a detected toolkit root. vLLM JIT-compiles kernels and
+  resolves `nvcc` through `CUDA_HOME`, falling back to `/usr/local/cuda`. A
+  machine with only the NVIDIA *driver* therefore fails every launch even though
+  torch's own wheels ship a complete toolkit in `site-packages/nvidia/cu13/`,
+  which vLLM never looks at. `detectCudaHome()` searches `$CUDA_HOME`, then the
+  vLLM environment's site-packages, then the usual system paths.
+
 **Orphan reconciliation.** A PID file records live children. On boot, any that
 survived an unclean shutdown are signalled and their DB rows marked `crashed`.
 Re-adopting them is not possible — their stdout is gone — so killing them is the
@@ -305,6 +321,14 @@ displayable:
 
 These are estimates limited by bucket granularity, and the UI says so; a
 benchmark measures latency directly.
+
+**VRAM attribution walks process ancestry.** vLLM's API server does not touch
+the GPU itself — it forks a `VLLM::EngineCore` worker that owns the entire
+allocation. Matching `nvidia-smi --query-compute-apps` against only the pid we
+spawned reported *null* for a deployment plainly holding 10 GiB, so the sampler
+walks each compute process's parent chain via `/proc/<pid>/stat` and sums
+everything descended from the supervised pid. This is what makes the headroom
+rail's per-deployment segments real rather than a single undifferentiated block.
 
 Metrics are read into `supervisor.list()` through `globalThis.__vllmAdminMetrics`
 rather than a direct import, because the poller imports the supervisor and a
@@ -479,6 +503,22 @@ instrument you have been reading all along. This is what
 system is completely still; anything that breathes or pulses is asking for
 attention. `prefers-reduced-motion` disables it all.
 
+![The deployment form with the headroom rail showing a hatched ghost segment for
+the deployment being configured.](docs/images/04-deployment-form.png)
+
+Under load the ramp does its work without a legend: GPU utilisation goes red at
+100%, power amber against its cap, temperature still teal at 56 °C — three
+different quantities, one scale, read at a glance.
+
+![The overview screen under load.](docs/images/07-dashboard-under-load.png)
+
+One rule the ramp taught us during testing: colour-by-magnitude is only
+meaningful against a *known* ceiling. An autoscaled series has its newest value
+near the top of its own window by construction, so ramping it painted an idle
+throughput trace saturation-red and said nothing. Autoscaled traces are now a
+flat categorical teal, and the ramp is reserved for series with a real maximum
+(percentages, power against cap).
+
 ---
 
 ## 14. Testing
@@ -502,21 +542,62 @@ Run: `npm test` · `npm run typecheck` · `npm run lint`.
 
 ## 15. Verification performed
 
-- `npm run build` — clean production build, 30 routes.
-- `npm test` — 104 passing. `tsc --noEmit` and `eslint` both clean.
-- **Telemetry:** live RTX 3090 data streaming at 1 Hz; figures cross-checked
-  against `nvidia-smi`. One sampler process regardless of open tabs.
-- **Environment detection:** found the vLLM venv at
-  `~/granite-inference/.venv/bin` and GuideLLM at `~/.local/bin` with no
-  configuration.
-- **Flag schema:** 274/274 options parsed from the live engine, across 17 groups.
-- **Deployment:** `granite-4.1-8b` started through the API at
-  `max-model-len=16384`, `gpu-memory-utilization=0.9`. vLLM's own
-  `non-default args` echo matched the previewed command exactly. The lifecycle
-  reported `loading` with phase labels, downloaded 13 GB, and allocated
-  17.5 GiB of VRAM.
-- **GuideLLM:** a real `concurrent` benchmark run against `guidellm mock-server`
-  produced the report that the ingest parser is tested against.
+Static checks: clean production build (30 routes), 104 passing tests, clean
+`tsc --noEmit` and `eslint`.
+
+### End-to-end, against a real served model
+
+`tools/e2e.mjs` drives the actual UI with Playwright: it fills the deployment
+form, starts the engine, waits for `healthy`, drives real inference, runs a
+GuideLLM benchmark and screenshots every step. Every image in these docs comes
+from that run, so they cannot drift from the product.
+
+A complete pass on this machine (`Qwen/Qwen3-0.6B`, `max-model-len=4096`,
+`gpu-memory-utilization=0.35`):
+
+| | |
+|---|---|
+| Time to `healthy` | 30 s (warm JIT cache) |
+| Inference driven | **536 completions, 0 failures** at concurrency 4 |
+| Peak observed | 1,372 generated tok/s, TTFT p50 15 ms, ITL p50 5 ms |
+| VRAM attributed | 9.73 GiB, matching `nvidia-smi` |
+| Benchmark | 4 sweep levels, saturation at 368 concurrent / 5,440 tok/s |
+| Telemetry captured | 90 samples across the run window for the overlay |
+| Console errors | none |
+
+The sweep is a clean illustration of the trade-off the tool exists to expose:
+
+| Strategy | Concurrency | Output tok/s | TTFT p50 |
+|---|---|---|---|
+| synchronous | 1.0 | 364 | 15 ms |
+| constant | 12.8 | 2,795 | 22 ms |
+| constant | 77.2 | 4,148 | 50 ms |
+| throughput | 368.1 | 5,440 | 5,297 ms |
+
+15× the throughput for 350× the time-to-first-token.
+
+### Findings from that run
+
+Things only a real launch surfaced, all fixed:
+
+- **`PATH` and `CUDA_HOME` for the child** (section 6). Three consecutive
+  launch failures — missing `nvcc`, then missing `ninja`, then a `-lcudart`
+  link error — each of which the app now names in plain language rather than
+  reporting "exited with code 1".
+- **VRAM attribution across process ancestry** (section 8): the headroom rail
+  showed nothing for a deployment holding 10 GiB.
+- **Carriage-return progress bars** buffered a 13 GB download into silence, so
+  the splitter now normalises `\r` → `\n`.
+- **Colour-by-magnitude on autoscaled traces** was meaningless (section 13).
+
+### Earlier partial verification
+
+Before the CUDA toolchain was aligned, a `granite-4.1-8b` launch confirmed the
+supervisor independently of whether the engine could start: vLLM's own
+`non-default args` echo matched the previewed command exactly, the lifecycle
+reported `loading` with phase labels, 13 GB of weights downloaded, 17.5 GiB of
+VRAM was allocated, and on failure the process group was reaped with no orphans
+and VRAM returned to baseline.
 
 ---
 
@@ -535,5 +616,11 @@ Run: `npm test` · `npm run typecheck` · `npm run lint`.
   but the headroom rail and estimator currently read GPU 0.
 - **GGUF models cannot be sized.** They carry no `config.json`, so the estimator
   reports "cannot verify" rather than guessing.
+- **The CUDA toolchain must be internally consistent.** vLLM JIT-compiles
+  kernels, and the pip toolkit is split across `nvidia-cuda-nvcc`,
+  `nvidia-cuda-crt`, `nvidia-nvvm` and `nvidia-cuda-runtime`, which can drift to
+  different versions and fail in four distinct ways. The app detects and reports
+  the toolkit root but deliberately does not repair the environment; the README
+  troubleshooting table maps each error to its fix.
 - **`vllm serve --help=all` costs a few seconds** on first load per vLLM
   version, because it imports torch. Thereafter it is cached on disk.

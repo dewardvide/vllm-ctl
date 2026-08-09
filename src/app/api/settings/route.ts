@@ -1,5 +1,6 @@
 import { guard, ok, readJson } from "@/lib/server/api";
 import {
+  detectCudaHome,
   detectGuidellmBinDir,
   detectVllmBinDir,
   effectiveHfToken,
@@ -35,6 +36,7 @@ export async function GET() {
         hasHfToken: effectiveHfToken(settings) !== null,
         detectedVllmBinDir: detectVllmBinDir(),
         detectedGuidellmBinDir: detectGuidellmBinDir(),
+        cudaHome: settings.cudaHome ?? detectCudaHome(settings.vllmBinDir),
       },
     });
   });

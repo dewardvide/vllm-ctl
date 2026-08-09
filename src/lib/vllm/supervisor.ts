@@ -8,7 +8,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { PATHS } from "@/lib/paths";
 import { getDb } from "@/lib/server/db";
 import { hub } from "@/lib/server/broadcast";
-import { getSettings, resolveExe, effectiveHfToken } from "@/lib/settings";
+import { getSettings, resolveExe, effectiveHfToken, detectCudaHome } from "@/lib/settings";
 import { sampler } from "@/lib/telemetry/sampler";
 import type { DeploymentStatus, LiveDeployment } from "@/lib/types";
 
@@ -100,6 +100,26 @@ class Supervisor {
       PYTHONUNBUFFERED: "1",
       ...spec.env,
     };
+
+    // Put the virtualenv's own bin directory on PATH, the way `activate` would.
+    // Spawning `vllm` by absolute path is not enough: it shells out to build
+    // tools that live beside it — `ninja` for torch's JIT extensions — and
+    // without this they are invisible and the engine dies mid-initialisation.
+    const pathParts: string[] = [];
+    if (settings.vllmBinDir) pathParts.push(settings.vllmBinDir);
+
+    // vLLM JIT-compiles kernels at engine init and resolves nvcc through
+    // CUDA_HOME. Without this a machine that has only the NVIDIA driver fails
+    // every launch, even though torch ships a usable toolkit in site-packages.
+    const cudaHome = settings.cudaHome ?? detectCudaHome(settings.vllmBinDir);
+    if (cudaHome) {
+      env.CUDA_HOME = cudaHome;
+      pathParts.push(path.join(cudaHome, "bin"));
+    }
+
+    if (pathParts.length > 0) {
+      env.PATH = [...pathParts, env.PATH ?? ""].filter(Boolean).join(path.delimiter);
+    }
     const token = effectiveHfToken(settings);
     if (token) env.HF_TOKEN = token;
 

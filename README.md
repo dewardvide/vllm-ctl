@@ -20,6 +20,10 @@ Four things it does:
    driven from the UI, with results parsed into charts and the GPU's own
    telemetry overlaid on the run timeline.
 
+![The overview screen under load: GPU gauges across the top, a live deployment
+serving 1,368 tokens/sec, and the VRAM headroom rail pinned under the
+navigation.](docs/images/07-dashboard-under-load.png)
+
 > **This app has no authentication.** It starts processes and deletes files on
 > your machine. It binds to `127.0.0.1` and is meant for one trusted user on one
 > workstation. Do not expose it to a network.
@@ -33,7 +37,7 @@ Four things it does:
 | Node | 22 or newer |
 | Python | a virtualenv with **vLLM 0.9+** installed (0.26 is what this was built against) |
 | GPU | an NVIDIA card with `nvidia-smi` on `PATH` |
-| CUDA | the **CUDA toolkit** (`nvcc`), not just the driver — see Troubleshooting |
+| CUDA | a **CUDA toolkit** (`nvcc`), not just the driver. Usually already inside your torch install — see Troubleshooting |
 | Optional | `guidellm` for benchmarks, `hf` for downloads (ships with `huggingface_hub`) |
 
 ## Install
@@ -54,8 +58,11 @@ The app auto-detects its environment on first launch and writes
 environment is usually found without configuration.
 
 Open **Settings** to confirm. It shows the detected vLLM version, the GuideLLM
-version, whether `nvidia-smi` works, and whether a Hugging Face token is
-available. Anything missing is called out with what to do about it.
+version, the CUDA toolkit root, whether `nvidia-smi` works, and whether a
+Hugging Face token is available. Anything missing is called out with what to do
+about it.
+
+![Settings, showing the auto-detected environment.](docs/images/01-settings.png)
 
 To enable benchmarks, install GuideLLM in its **own** environment so it cannot
 disturb your vLLM one:
@@ -89,6 +96,12 @@ Click any model to open its detail panel. This is the one that matters on a
 If a model can't be sized (GGUF builds carry no `config.json`), it says
 "cannot verify" rather than guessing.
 
+![The models screen: local cache with true on-disk sizes on the left, Hugging
+Face search on the right.](docs/images/02-models.png)
+
+![A model's detail panel, showing the VRAM split into weights, KV cache and
+overhead, with the longest context that fits.](docs/images/03-model-fit.png)
+
 ### Deployments
 
 **Essentials** are at the top in the order you actually reach for them —
@@ -96,6 +109,8 @@ If a model can't be sized (GGUF builds carry no `config.json`), it says
 `--kv-cache-dtype`, and so on. Below that, every remaining option grouped
 exactly as vLLM groups them (`ModelConfig`, `CacheConfig`, `ParallelConfig`,
 `CompilationConfig`, …). Search covers names, aliases and help text.
+
+![Searching the option surface for "cache".](docs/images/05-option-search.png)
 
 Three things worth knowing:
 
@@ -106,15 +121,25 @@ Three things worth knowing:
   spawns the process, so it cannot drift from what runs.
 - **Import** pastes an existing `vllm serve …` command into the form.
 
+![The deployment form: essentials first, the exact command that will run, and a
+live VRAM projection. The hatched segment on the headroom rail is this
+deployment's projected footprint.](docs/images/04-deployment-form.png)
+
 Press **start now** to launch, or **save profile** to keep the configuration for
 later. While a server loads you'll see its real phase — "loading weights",
 "compiling graphs", "capturing cuda graphs" — because a two-minute start should
 look like progress, not a hang.
 
+![A deployment a second after launch: status `starting`, the process already
+adopted, logs about to stream.](docs/images/06-loading.png)
+
 If the projected VRAM doesn't fit, the start is refused with a specific reason
 and, where possible, the context length that *would* fit. You can override it.
 
 Open a running deployment for live logs, engine metrics and a config summary.
+
+![A running deployment: engine metrics with live traces above, streaming vLLM
+logs below.](docs/images/08-deployment-detail.png)
 
 ### Benchmarks
 
@@ -129,12 +154,18 @@ question they answer:
 | throughput | What's the peak this card can do? |
 | constant / poisson | What happens at a steady / realistic arrival rate? |
 
+![The benchmark run builder: profiles described by the question they
+answer.](docs/images/09-benchmark-form.png)
+
 Results give you a **saturation point** — the load level past which extra
 concurrency buys queueing delay rather than tokens — plus throughput and latency
 curves, a per-level table, and the GPU's own utilisation, power and temperature
 across the run. That last one is the reason to run benchmarks here rather than
 from a terminal: if the card was thermal-throttling by the third load level, the
 comparison is invalid, and the overlay shows you that.
+
+![Benchmark results: the saturation point, throughput and latency against load,
+and the GPU's own telemetry across the run.](docs/images/11-benchmark-results.png)
 
 Only one benchmark runs at a time. Two load generators on one GPU would make
 both results meaningless.
@@ -150,6 +181,7 @@ hand.
 |---|---|---|
 | `vllmBinDir` | auto-detected | Directory containing the `vllm` executable |
 | `guidellmBinDir` | auto-detected | Keep separate from the vLLM environment |
+| `cudaHome` | auto-detected | Passed to deployments as `CUDA_HOME`; vLLM needs `nvcc` here |
 | `hfCacheDir` | `~/.cache/huggingface/hub` | Honours `HF_HUB_CACHE` / `HF_HOME` |
 | `hfToken` | from `hf` CLI | Only needed for gated repos |
 | `serveHost` | `127.0.0.1` | Changing this exposes your models to the network |
@@ -180,11 +212,50 @@ Deleting `~/.vllm-admin` resets the app without touching your models.
 ## Troubleshooting
 
 **"The CUDA toolkit (nvcc) is not installed"**
-vLLM compiles kernels at startup and needs `nvcc`, which the NVIDIA *driver*
-does not provide. Check with `nvcc --version`. Install a CUDA toolkit matching
-your driver, or `pip install nvidia-cuda-nvcc-cu12` inside your vLLM
-environment. `--enforce-eager` skips graph capture but **not** kernel
-compilation, so it is not a workaround on its own.
+vLLM compiles kernels at engine start and needs `nvcc`, which the NVIDIA
+*driver* does not provide. `--enforce-eager` skips CUDA graph capture but **not**
+kernel compilation, so it is not a workaround.
+
+You probably already have a toolkit: PyTorch's wheels ship one inside
+site-packages (`nvidia/cu13/`). The app looks there automatically and reports
+what it found under **Settings → detected → cuda toolkit**. If it finds nothing,
+install one into the vLLM environment:
+
+```bash
+pip install nvidia-cuda-nvcc      # or: uv pip install nvidia-cuda-nvcc
+```
+
+Prefer that over a distro package: it matches the CUDA version your torch build
+was compiled for, which a system toolkit often does not.
+
+**Kernel compilation fails after nvcc is found**
+The pip toolkit is split across several packages that can drift apart, and the
+error names which stage broke:
+
+| Error | Cause | Fix |
+|---|---|---|
+| `CUDA compiler and CUDA toolkit headers are incompatible` | `nvidia-cuda-nvcc` newer than `nvidia-cuda-runtime` | Pin nvcc to the runtime's major.minor |
+| `Unsupported .version 9.3; current version is '9.0'` | `nvidia-nvvm` / `nvidia-cuda-crt` newer than `nvcc` — the front end emits newer PTX than `ptxas` accepts | Pin all four to one version |
+| `cannot find -lcudart` | pip layout has `lib/libcudart.so.13` but no `lib64/` and no bare `.so` symlink, which is what a real toolkit exposes | Add the symlinks (below) |
+| `No such file or directory: 'ninja'` | build tool missing from the environment | `pip install ninja` |
+
+Check they agree, and align them if not:
+
+```bash
+uv pip list | grep -E 'cuda-nvcc|cuda-crt|cuda-runtime|nvidia-nvvm'
+uv pip install 'nvidia-cuda-nvcc==13.0.*' 'nvidia-cuda-crt==13.0.*' 'nvidia-nvvm==13.0.*'
+```
+
+Then complete the toolkit layout so the linker can find the runtime:
+
+```bash
+CU=<venv>/lib/python3.12/site-packages/nvidia/cu13
+ln -s lib "$CU/lib64"
+cd "$CU/lib" && for f in *.so.*; do ln -sf "$f" "${f%%.so.*}.so"; done
+```
+
+After changing any of this, clear the JIT cache so nothing stale is reused:
+`rm -rf ~/.cache/flashinfer`.
 
 **"Out of GPU memory"**
 Lower `--max-model-len` first — KV cache usually dominates. Then try
@@ -238,12 +309,21 @@ percentiles and counter rates, VRAM estimation (validated against measured
 figures for granite-4.1-8b), and GuideLLM command construction and result
 parsing (against a real report from `guidellm mock-server`).
 
-`tools/shot.mjs` takes a screenshot of a running page, which is handy for
-checking UI changes:
+Two Playwright tools drive the real app rather than a mock:
 
 ```bash
+# One page, one screenshot.
 node tools/shot.mjs http://localhost:3000/ out.png 1440 900
+
+# Full walkthrough: configure a deployment in the UI, start it, wait for the
+# engine to become healthy, drive real inference, run a GuideLLM benchmark, and
+# capture a screenshot at every step. Needs the app already running.
+node tools/e2e.mjs --model Qwen/Qwen3-0.6B --served qwen3-0.6b --out docs/images
 ```
+
+`e2e.mjs` is what produced every screenshot in this README, so the docs always
+show the actual product. It exits non-zero and captures a failure screenshot if
+any step breaks, which makes it usable as a smoke test after a change.
 
 See [LLD.md](./LLD.md) for the design: architecture, the option-schema parser,
 the deployment lifecycle, the VRAM model, and the known limitations.

@@ -9,6 +9,7 @@ import { Button, Note, Panel, Problem, Readout } from "@/components/ui/primitive
 interface Settings {
   vllmBinDir: string | null;
   guidellmBinDir: string | null;
+  cudaHome: string | null;
   hfCacheDir: string;
   hfToken: string | null;
   serveHost: string;
@@ -27,6 +28,7 @@ interface Environment {
   hasHfToken: boolean;
   detectedVllmBinDir: string | null;
   detectedGuidellmBinDir: string | null;
+  cudaHome: string | null;
 }
 
 export function SettingsScreen() {
@@ -113,6 +115,17 @@ export function SettingsScreen() {
                 value={settings.guidellmBinDir ?? ""}
                 onChange={(e) => set("guidellmBinDir", e.target.value || null)}
                 placeholder={env.detectedGuidellmBinDir ?? "~/.local/bin"}
+              />
+            </label>
+
+            <label className="flex flex-col gap-1">
+              <span className="plate">
+                cuda toolkit root — vllm compiles kernels and needs nvcc here
+              </span>
+              <input
+                value={settings.cudaHome ?? ""}
+                onChange={(e) => set("cudaHome", e.target.value || null)}
+                placeholder={env.cudaHome ?? "no toolkit found"}
               />
             </label>
 
@@ -248,6 +261,12 @@ export function SettingsScreen() {
               }
             />
             <Readout
+              label="cuda toolkit"
+              value={env.cudaHome ? env.cudaHome.replace(/^.*\/site-packages\//, "…/") : "not found"}
+              size="sm"
+              color={env.cudaHome ? THERMAL.t2 : THERMAL.t4}
+            />
+            <Readout
               label="gpu"
               value={env.gpuAvailable ? "nvidia-smi available" : "not available"}
               size="sm"
@@ -265,6 +284,15 @@ export function SettingsScreen() {
               No vLLM executable was found, so deployments cannot start and the option
               schema cannot be read. Point the python environment above at a virtualenv
               that has vLLM installed.
+            </Problem>
+          )}
+
+          {!env.cudaHome && (
+            <Problem>
+              No CUDA toolkit found, so vLLM cannot compile kernels and every
+              deployment will fail at engine start. Install one, or add nvcc to the
+              vLLM environment with{" "}
+              <code className="num text-[11px]">pip install nvidia-cuda-nvcc</code>.
             </Problem>
           )}
 

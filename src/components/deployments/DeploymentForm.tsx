@@ -321,6 +321,7 @@ export function DeploymentForm() {
             <label className="flex flex-col gap-1 col-span-2">
               <span className="plate">model — repo id or local path</span>
               <input
+                data-field="model"
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
                 placeholder="ibm-granite/granite-4.1-8b"
@@ -338,6 +339,7 @@ export function DeploymentForm() {
             <label className="flex flex-col gap-1">
               <span className="plate">served as</span>
               <input
+                data-field="servedName"
                 value={servedName}
                 onChange={(e) => setServedName(e.target.value)}
                 placeholder="what clients ask for"
@@ -378,6 +380,7 @@ export function DeploymentForm() {
             <div className="flex items-center gap-2 px-3 py-2 hairline-t sticky top-0 bg-void z-10">
               <input
                 type="search"
+                data-field="flagSearch"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder={`Search ${schema.flags.length} options`}

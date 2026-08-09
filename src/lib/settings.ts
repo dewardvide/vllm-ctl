@@ -22,6 +22,11 @@ export const SettingsSchema = z.object({
   vllmBinDir: z.string().nullable(),
   /** Directory containing the `guidellm` executable. */
   guidellmBinDir: z.string().nullable(),
+  /**
+   * CUDA toolkit root passed to deployments as `CUDA_HOME`. Auto-detected;
+   * vLLM cannot compile kernels without it.
+   */
+  cudaHome: z.string().nullable(),
   /** Hugging Face hub cache root. */
   hfCacheDir: z.string(),
   /** Token for gated/private repos. Falls back to the `hf` CLI's stored token. */
@@ -45,6 +50,7 @@ function defaults(): Settings {
   return {
     vllmBinDir: detectVllmBinDir(),
     guidellmBinDir: detectGuidellmBinDir(),
+    cudaHome: detectCudaHome(detectVllmBinDir()),
     hfCacheDir: defaultHfCacheDir(),
     hfToken: null,
     serveHost: "127.0.0.1",
@@ -102,6 +108,59 @@ function detectBinDirContaining(exe: string): string | null {
 
 export function detectVllmBinDir(): string | null {
   return detectBinDirContaining("vllm");
+}
+
+/**
+ * Finds a CUDA toolkit root (a directory with `bin/nvcc`).
+ *
+ * vLLM compiles kernels during engine init and looks for `nvcc` under
+ * `$CUDA_HOME`, falling back to `/usr/local/cuda`. On a machine with only the
+ * NVIDIA *driver* installed that fails — but PyTorch's own wheels ship a
+ * complete toolkit inside site-packages (`nvidia/cu13/`), which vLLM never
+ * looks at. Pointing `CUDA_HOME` there makes deployments work with no system
+ * package and no sudo, and it matches the CUDA version torch was built for
+ * rather than whatever the distro happens to package.
+ */
+export function detectCudaHome(vllmBinDir: string | null): string | null {
+  const candidates: string[] = [];
+
+  if (process.env.CUDA_HOME) candidates.push(process.env.CUDA_HOME);
+  if (process.env.CUDA_PATH) candidates.push(process.env.CUDA_PATH);
+
+  // Toolkits bundled in the vLLM environment's site-packages.
+  if (vllmBinDir) {
+    const venv = path.dirname(vllmBinDir);
+    for (const libDir of [path.join(venv, "lib"), path.join(venv, "lib64")]) {
+      let pythons: string[] = [];
+      try {
+        pythons = fs.readdirSync(libDir).filter((d) => d.startsWith("python"));
+      } catch {
+        continue;
+      }
+      for (const py of pythons) {
+        const nvidia = path.join(libDir, py, "site-packages", "nvidia");
+        let entries: string[] = [];
+        try {
+          entries = fs.readdirSync(nvidia);
+        } catch {
+          continue;
+        }
+        // Newer wheels use `cu13/`; older ones split it into `cuda_nvcc/`.
+        for (const e of entries.sort().reverse()) {
+          if (/^cu\d+$/.test(e) || e === "cuda_nvcc") {
+            candidates.push(path.join(nvidia, e));
+          }
+        }
+      }
+    }
+  }
+
+  candidates.push("/usr/local/cuda", "/usr/lib/cuda", "/opt/cuda");
+
+  for (const c of candidates) {
+    if (isExecutable(path.join(c, "bin", "nvcc"))) return c;
+  }
+  return null;
 }
 
 export function detectGuidellmBinDir(): string | null {

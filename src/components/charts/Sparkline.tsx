@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 
-import { INK, ramp } from "@/lib/thermal";
+import { INK, ramp, THERMAL } from "@/lib/thermal";
 
 /**
  * A canvas time-series trace.
@@ -93,7 +93,12 @@ export function Sparkline({
       };
 
       const latest = vals[vals.length - 1];
-      const stroke = s.color ?? ramp((latest - lo) / span);
+      // The thermal ramp encodes magnitude against a *known* scale. On an
+      // autoscaled series the newest value is by definition near the top of its
+      // own window, which would paint an idle throughput trace saturation-red
+      // and say nothing. Ramp only when a real ceiling was given.
+      const stroke =
+        s.color ?? (s.max != null ? ramp((latest - lo) / span) : THERMAL.t2);
 
       // Baseline rule. Without it an idle trace sitting at zero looks like a
       // rendering failure rather than a reading of zero.

@@ -191,6 +191,7 @@ export function DeploymentDetail({ runId }: { runId: number }) {
               value={fixed(m.kvCachePct, 0)}
               unit="%"
               series={series.kv}
+              max={100}
               last
             />
           </div>
@@ -270,6 +271,7 @@ function MetricCell({
   value,
   unit,
   series,
+  max,
   warn,
   last = false,
 }: {
@@ -277,6 +279,8 @@ function MetricCell({
   value: string;
   unit?: string;
   series: number[];
+  /** Fixed ceiling; enables thermal-ramp colouring for percentage metrics. */
+  max?: number;
   warn?: boolean;
   last?: boolean;
 }) {
@@ -290,7 +294,7 @@ function MetricCell({
       />
       {series.length > 1 && (
         <div className="mt-1">
-          <Sparkline values={series} height={20} ariaLabel={label} />
+          <Sparkline values={series} height={20} max={max} ariaLabel={label} />
         </div>
       )}
     </div>

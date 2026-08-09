@@ -42,6 +42,12 @@ const FATAL: Array<{ re: RegExp; message: string }> = [
       "Requested --max-model-len does not fit in the KV cache. Reduce it, or raise --gpu-memory-utilization.",
   },
   {
+    re: /No such file or directory: 'ninja'|Ninja is required to load C\+\+ extensions/i,
+    message:
+      "The `ninja` build tool is missing, so torch cannot compile its C++ extensions. " +
+      "Install it into the vLLM environment with `pip install ninja`.",
+  },
+  {
     re: /Could not find nvcc|cuda_home=.*doesn't exist|CUDA_HOME.*not set/i,
     message:
       "The CUDA toolkit (nvcc) is not installed, so vLLM cannot compile kernels. " +
