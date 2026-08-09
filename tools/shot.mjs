@@ -1,0 +1,13 @@
+import { chromium } from "playwright";
+const EXE = process.env.HOME + "/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome";
+const [,, url, out, w = "1440", h = "900"] = process.argv;
+const b = await chromium.launch({ executablePath: EXE });
+const p = await b.newPage({ viewport: { width: +w, height: +h }, deviceScaleFactor: 2 });
+const errors = [];
+p.on("console", m => { if (m.type() === "error") errors.push(m.text()); });
+p.on("pageerror", e => errors.push("PAGEERROR: " + e.message));
+await p.goto(url, { waitUntil: "networkidle", timeout: 60000 }).catch(e => errors.push("NAV: "+e.message));
+await p.waitForTimeout(3500);
+await p.screenshot({ path: out, fullPage: false });
+console.log(errors.length ? "CONSOLE ERRORS:\n" + errors.join("\n") : "no console errors");
+await b.close();

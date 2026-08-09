@@ -1,0 +1,282 @@
+@import "tailwindcss";
+
+/* ==========================================================================
+   RACK INSTRUMENT — design tokens
+   Chrome is cold and quiet. Color carries meaning and lives inside data marks.
+   ========================================================================== */
+
+@theme {
+  /* --- surfaces: cold graphite, never pure black -------------------------- */
+  --color-void: #0b0e11; /* page canvas */
+  --color-panel: #12171c; /* raised regions */
+  --color-panel-hi: #171e25; /* hover / selected rows */
+  --color-rule: #1e262e; /* hairlines */
+  --color-rule-hi: #2c3742; /* emphasized hairlines, registration ticks */
+
+  /* --- ink ---------------------------------------------------------------- */
+  --color-ink: #e6edf3;
+  --color-ink-dim: #8ca0b3;
+  --color-ink-faint: #536170;
+
+  /* --- chrome accent: deliberately desaturated. focus/active only ---------- */
+  --color-signal: #5ec8d8;
+  --color-signal-dim: #2f7f8c;
+
+  /* --- thermal ramp: magnitude encoding, data marks only ------------------- */
+  --color-t0: #1f3a5f; /* idle */
+  --color-t1: #2e7ba6; /* low */
+  --color-t2: #4fb3a5; /* nominal */
+  --color-t3: #e8a33d; /* loaded */
+  --color-t4: #e05b49; /* saturated */
+
+  /* --- type --------------------------------------------------------------- */
+  --font-ui: var(--font-archivo), ui-sans-serif, system-ui, sans-serif;
+  --font-plate: var(--font-archivo), ui-sans-serif, system-ui, sans-serif;
+  --font-data: var(--font-plex-mono), ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* --- structure ---------------------------------------------------------- */
+  --radius-ctl: 2px;
+}
+
+/* status colours are points on the thermal ramp — one vocabulary, not two */
+:root {
+  --status-healthy: var(--color-t2);
+  --status-pending: var(--color-t3);
+  --status-failed: var(--color-t4);
+  --status-idle: var(--color-ink-faint);
+}
+
+/* ==========================================================================
+   base
+   ========================================================================== */
+
+* {
+  border-color: var(--color-rule);
+}
+
+html {
+  background: var(--color-void);
+  color-scheme: dark;
+}
+
+body {
+  background: var(--color-void);
+  color: var(--color-ink);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* every number in this app is tabular so digits never jitter at 1 Hz */
+.num,
+.font-data {
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "zero" 1;
+  letter-spacing: -0.01em;
+}
+
+/* ==========================================================================
+   engraved nameplate — a rack-unit label, not a heading
+   ========================================================================== */
+
+.plate {
+  font-family: var(--font-plate);
+  font-size: 10px;
+  font-weight: 600;
+  font-stretch: 125%;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-ink-faint);
+  white-space: nowrap;
+}
+
+/* label followed by a hairline that runs to the edge of its region */
+.plate-rule {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.plate-rule::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--color-rule);
+}
+
+/* ==========================================================================
+   registration ticks — engineering-drawing corner marks, used sparingly
+   on live panels only.
+   ========================================================================== */
+
+.ticked {
+  position: relative;
+}
+.ticked::before,
+.ticked::after {
+  content: "";
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  pointer-events: none;
+  border-color: var(--color-rule-hi);
+}
+.ticked::before {
+  top: 0;
+  left: 0;
+  border-top: 1px solid;
+  border-left: 1px solid;
+}
+.ticked::after {
+  bottom: 0;
+  right: 0;
+  border-bottom: 1px solid;
+  border-right: 1px solid;
+}
+
+/* ==========================================================================
+   motion is reserved for transitional state. a healthy system is still.
+   ========================================================================== */
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.is-transitional {
+  animation: breathe 1.6s ease-in-out infinite;
+}
+
+@keyframes rail-ghost {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.2;
+  }
+}
+
+.ghost-seg {
+  animation: rail-ghost 2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* ==========================================================================
+   controls
+   ========================================================================== */
+
+:focus-visible {
+  outline: 1px solid var(--color-signal);
+  outline-offset: 1px;
+}
+
+input,
+select,
+textarea,
+button {
+  font: inherit;
+  color: inherit;
+}
+
+/* `input:not([type])` matters: an input with no type attribute defaults to
+   text but is not matched by `input[type="text"]`, which would leave it
+   borderless and invisible against the canvas. */
+input:not([type]),
+input[type="text"],
+input[type="number"],
+input[type="search"],
+input[type="password"],
+select,
+textarea {
+  background: var(--color-void);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-ctl);
+  padding: 4px 7px;
+  font-family: var(--font-data);
+  font-size: 12px;
+  width: 100%;
+}
+input:hover,
+select:hover,
+textarea:hover {
+  border-color: var(--color-rule-hi);
+}
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--color-signal-dim);
+  outline: none;
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--color-ink-faint);
+}
+
+/* number inputs: drop spinners, they fight the tabular alignment */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+/* ==========================================================================
+   scrollbars — thin, part of the chassis
+   ========================================================================== */
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-rule);
+  border: 2px solid var(--color-void);
+  border-radius: 5px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-rule-hi);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ==========================================================================
+   utilities
+   ========================================================================== */
+
+/* Registered as Tailwind utilities, not plain classes, so responsive variants
+   like `xl:hairline-r` actually compile. */
+@utility hairline-t {
+  border-top: 1px solid var(--color-rule);
+}
+@utility hairline-b {
+  border-bottom: 1px solid var(--color-rule);
+}
+@utility hairline-l {
+  border-left: 1px solid var(--color-rule);
+}
+@utility hairline-r {
+  border-right: 1px solid var(--color-rule);
+}
