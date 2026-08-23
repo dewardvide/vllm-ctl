@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      # Has to precede the tests: vitest.config.mts aliases `server-only`
+      # to a concrete path inside node_modules.
+      - run: npm ci
+
+      - run: npm run lint
+
+      # `tsc` alone fails on a clean checkout — app/layout.tsx uses
+      # `LayoutProps<"/">`, a global that only exists once Next has
+      # written .next/types. typegen produces it without a full build.
+      - run: npx next typegen
+      - run: npm run typecheck
+
+      - run: npm test
+
+      - run: npm run build

@@ -1,0 +1,52 @@
+# Group order is significant: Dependabot assigns an update to the FIRST
+# group whose patterns match, so the coupled-package groups have to come
+# before the catch-all ones below them.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: [dependencies]
+    groups:
+      # next and eslint-config-next are both pinned to the same exact
+      # version; splitting them produces two PRs that break each other.
+      next:
+        patterns:
+          - next
+          - eslint-config-next
+          - "@next/*"
+      react:
+        patterns:
+          - react
+          - react-dom
+          - "@types/react"
+          - "@types/react-dom"
+      sqlite:
+        patterns:
+          - better-sqlite3
+          - "@types/better-sqlite3"
+      tailwind:
+        patterns:
+          - tailwindcss
+          - "@tailwindcss/*"
+      # Majors are deliberately excluded from these two, so every major
+      # bump arrives as its own PR and can be held on its own merits.
+      dev-minor-patch:
+        dependency-type: development
+        update-types: [minor, patch]
+      prod-minor-patch:
+        dependency-type: production
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels: [dependencies, github-actions]
+    groups:
+      actions:
+        patterns: ["*"]
