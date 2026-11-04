@@ -49,10 +49,13 @@ navigation.](docs/images/07-dashboard-under-load.png)
 ```bash
 npm install
 npm run build
-npm start          # http://localhost:3000
+npm start          # http://localhost:3333
 ```
 
 For development: `npm run dev`.
+
+Both commands use port 3333. To select a free port automatically instead, use
+`npm start -- --port 0` or `npm run dev -- --port 0`.
 
 ### First run
 
@@ -340,13 +343,13 @@ Two Playwright tools drive the real app rather than a mock:
 
 ```bash
 # One page, one screenshot.
-node tools/shot.mjs http://localhost:3000/ out.png 1440 900
+node tools/shot.mjs http://localhost:3333/ out.png 1440 900
 
 # Full walkthrough: configure a deployment in the UI, start it, wait for the
 # engine to become healthy, drive real inference, hold a chat exchange with it,
 # run a GuideLLM benchmark, and capture a screenshot at every step. Needs the
 # app already running.
-node tools/e2e.mjs --model Qwen/Qwen3-0.6B --served qwen3-0.6b --out docs/images
+node tools/e2e.mjs --base http://localhost:3333 --model Qwen/Qwen3-0.6B --served qwen3-0.6b --out docs/images
 ```
 
 `e2e.mjs` is what produced every screenshot in this README, so the docs always
