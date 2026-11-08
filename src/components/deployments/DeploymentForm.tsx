@@ -1,5 +1,7 @@
 "use client";
 
+import { buildLlamaArgv, LLAMA_OPTIONS, LFM_MODEL } from "@/lib/backends/llamacpp";
+import type { BackendId, ModelSource } from "@/lib/types";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -41,6 +43,9 @@ export function DeploymentForm() {
   const [schemaError, setSchemaError] = useState<string | null>(null);
   const [loadingSchema, setLoadingSchema] = useState(true);
 
+  const [backend, setBackend] = useState<BackendId>(params.get("backend") === "llamacpp" ? "llamacpp" : "vllm");
+  const [modelSource, setModelSource] = useState<ModelSource>({ kind: "hub", quantization: "Q4_K_M" });
+  const [llama, setLlama] = useState({ executable: "llama-server", mode: "server" as "server" | "serve" });
   const [name, setName] = useState("");
   const [model, setModel] = useState(params.get("model") ?? "");
   const [servedName, setServedName] = useState("");
@@ -50,7 +55,7 @@ export function DeploymentForm() {
   const [flags, setFlags] = useState<Record<string, FlagValue>>(() => {
     const preset = params.get("max-model-len");
     const initial: Record<string, FlagValue> = {};
-    if (preset) initial["max-model-len"] = preset;
+    if (preset && params.get("backend") !== "llamacpp") initial["max-model-len"] = preset;
     return initial;
   });
   const [profileId, setProfileId] = useState<number | null>(null);
@@ -84,8 +89,8 @@ export function DeploymentForm() {
   }, []);
 
   useEffect(() => {
-    void Promise.resolve().then(() => loadSchema());
-  }, [loadSchema]);
+    if (backend === "vllm") void Promise.resolve().then(() => loadSchema());
+  }, [loadSchema, backend]);
 
   /* --- bind address ------------------------------------------------------ */
 
@@ -96,8 +101,8 @@ export function DeploymentForm() {
 
   useEffect(() => {
     api
-      .get<{ settings: { serveHost: string } }>("/api/settings")
-      .then((r) => setServeHost(r.settings.serveHost))
+      .get<{ settings: { serveHost: string; llamaExecutable: string | null; llamaInvocation: "server" | "serve" }; environment: { llama: { executable?: string; mode?: "server" | "serve" } } }>("/api/settings")
+      .then((r) => { setServeHost(r.settings.serveHost); setLlama({ executable: r.environment.llama.executable ?? r.settings.llamaExecutable ?? "llama-server", mode: r.environment.llama.mode ?? r.settings.llamaInvocation }); })
       .catch(() => {
         /* the preview falls back to loopback; the launch still uses the setting */
       });
@@ -111,6 +116,8 @@ export function DeploymentForm() {
     api
       .get<{ profile: DeploymentProfile }>(`/api/deployments/${id}`)
       .then(({ profile }) => {
+        setBackend(profile.backend);
+        if (profile.modelSource) setModelSource(profile.modelSource);
         setProfileId(profile.id);
         setName(profile.name);
         setModel(profile.model);
@@ -132,19 +139,19 @@ export function DeploymentForm() {
   const errors = useMemo(() => {
     const out: Record<string, string> = {};
     for (const [name, raw] of Object.entries(flags)) {
-      const spec = specs.get(name);
+      const spec = backend === "vllm" ? specs.get(name) : undefined;
       if (!spec) continue;
       const r = coerceFlagValue(spec, raw as string);
       if (!r.ok) out[name] = r.error;
     }
     return out;
-  }, [flags, specs]);
+  }, [flags, specs, backend]);
 
   /** Flags coerced to their real types, ready to send. */
   const typedFlags = useMemo(() => {
     const out: Record<string, FlagValue> = {};
     for (const [name, raw] of Object.entries(flags)) {
-      const spec = specs.get(name);
+      const spec = backend === "vllm" ? specs.get(name) : undefined;
       if (!spec) {
         out[name] = raw;
         continue;
@@ -153,13 +160,13 @@ export function DeploymentForm() {
       if (r.ok) out[name] = r.value;
     }
     return out;
-  }, [flags, specs]);
+  }, [flags, specs, backend]);
 
   /* --- live VRAM projection --------------------------------------------- */
 
   useEffect(() => {
     const t = setTimeout(async () => {
-      if (!model.trim()) {
+      if (backend === "llamacpp" || !model.trim()) {
         setEstimate(null);
         return;
       }
@@ -186,7 +193,7 @@ export function DeploymentForm() {
       }
     }, 400);
     return () => clearTimeout(t);
-  }, [model, typedFlags, setProjection]);
+  }, [model, typedFlags, setProjection, backend]);
 
   // Ghost segment on the shell's headroom rail.
   useEffect(() => {
@@ -199,6 +206,9 @@ export function DeploymentForm() {
 
   const preview = useMemo(() => {
     if (!model.trim()) return "";
+    if (backend === "llamacpp") {
+      try { return formatCommand(llama.executable, buildLlamaArgv({ name, model: model.trim(), servedName, flags: typedFlags, modelSource }, { host: serveHost, port: Number(port) || 8000 }, llama.mode)); } catch (e) { return (e as Error).message; }
+    }
     const argv = buildServeArgv(
       {
         name: name || model,
@@ -209,7 +219,7 @@ export function DeploymentForm() {
       { host: serveHost, port: Number(port) || 8000 },
     );
     return formatCommand("vllm", argv);
-  }, [model, name, servedName, port, typedFlags, serveHost]);
+  }, [model, name, servedName, port, typedFlags, serveHost, backend, modelSource, llama]);
 
   /* --- actions ---------------------------------------------------------- */
 
@@ -227,6 +237,8 @@ export function DeploymentForm() {
     setError(null);
     try {
       const body = {
+        backend,
+        modelSource: backend === "llamacpp" ? modelSource : null,
         name: name.trim() || model.split("/").pop() || "deployment",
         model: model.trim(),
         servedName: servedName.trim() || null,
@@ -249,6 +261,8 @@ export function DeploymentForm() {
     setConflict(null);
     try {
       const { runId } = await api.post<{ runId: number }>("/api/deployments/start", {
+        backend,
+        modelSource: backend === "llamacpp" ? modelSource : null,
         name: name.trim() || model.split("/").pop(),
         model: model.trim(),
         servedName: servedName.trim() || null,
@@ -326,12 +340,25 @@ export function DeploymentForm() {
       return next;
     });
 
+  if (params.get("profile") && profileId === null) return error ? <Problem>{error}</Problem> : <p className="p-3 plate">loading profile</p>;
+
   return (
     <div className="grid grid-cols-1 xl:grid-cols-[1fr_400px] min-h-full">
       {/* ---------------- options ---------------- */}
       <div className="min-w-0 flex flex-col">
         {error && <Problem>{error}</Problem>}
 
+        <div className="p-3 flex gap-3 items-center">
+          <label>Backend <select value={backend} onChange={e => { setBackend(e.target.value as BackendId); setFlags({}); setEstimate(null); }}><option value="vllm">vLLM</option><option value="llamacpp">llama.cpp</option></select></label>
+          <Button onClick={() => { setBackend("llamacpp"); setModel(LFM_MODEL); setModelSource({ kind: "hub", quantization: "Q4_K_M" }); setFlags({}); }}>LFM3-Omni preset</Button>
+        </div>
+        {backend === "llamacpp" && <Panel label="llama.cpp options">
+          <div className="grid grid-cols-2 gap-3 p-3">
+            <label>Model source<select className="w-full" value={modelSource.kind} onChange={e => setModelSource(e.target.value === "local" ? { kind: "local" } : { kind: "hub", quantization: "Q4_K_M" })}><option value="hub">Hugging Face repository</option><option value="local">Local GGUF file</option></select></label>
+            {modelSource.kind === "hub" && <><label>Quantization<input className="w-full" value={modelSource.quantization ?? ""} placeholder="Q4_K_M" onChange={e => setModelSource({ kind: "hub", quantization: e.target.value || undefined })} /></label><label>Exact Hub filename (instead of quantization)<input className="w-full" value={modelSource.filename ?? ""} onChange={e => setModelSource({ kind: "hub", filename: e.target.value || undefined })} /></label></>}
+            {LLAMA_OPTIONS.map(key => <label key={key}>{key}<input className="w-full" type={key === "mmproj" ? "text" : "number"} placeholder="runtime default" value={String(flags[key] ?? "")} onChange={e => setFlag(key, e.target.value === "" ? undefined : key === "mmproj" ? e.target.value : Number(e.target.value))} /></label>)}
+          </div>
+        </Panel>}
         <Panel label={profileId ? "edit deployment" : "new deployment"} ticked>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 px-3 py-2.5 hairline-t">
             <label className="flex flex-col gap-1 col-span-2">
@@ -373,13 +400,13 @@ export function DeploymentForm() {
           </div>
         </Panel>
 
-        {loadingSchema && (
+        {backend === "vllm" && loadingSchema && (
           <p className="px-3 py-4 plate">
             reading options from vllm — this imports torch and takes a few seconds
           </p>
         )}
 
-        {schemaError && (
+        {backend === "vllm" && schemaError && (
           <div className="flex flex-col gap-2 p-3">
             <Problem>{schemaError}</Problem>
             <span className="flex gap-1">
@@ -391,7 +418,7 @@ export function DeploymentForm() {
           </div>
         )}
 
-        {schema && (
+        {backend === "vllm" && schema && (
           <>
             <div className="flex items-center gap-2 px-3 py-2 hairline-t sticky top-0 bg-void z-10">
               <input
@@ -508,6 +535,7 @@ export function DeploymentForm() {
       <aside className="xl:hairline-l min-w-0">
         <div className="xl:sticky xl:top-0 flex flex-col">
           <Panel label="command" ticked>
+            <Button disabled={!preview} onClick={() => navigator.clipboard.writeText(preview)}>copy command</Button>
             {preview ? (
               <pre className="num text-[11px] leading-relaxed px-3 py-2 whitespace-pre-wrap break-all text-ink-dim overflow-auto max-h-72">
                 {preview}
@@ -517,7 +545,8 @@ export function DeploymentForm() {
             )}
           </Panel>
 
-          {estimate && (
+          {backend === "llamacpp" && <p className="p-3 plate">Memory estimate unavailable for llama.cpp</p>}
+          {backend === "vllm" && estimate && (
             <Panel label="projected vram">
               <div className="px-3 py-2 flex flex-col gap-1.5">
                 <div className="flex items-baseline gap-2">

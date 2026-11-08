@@ -183,9 +183,14 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX idx_downloads_started ON downloads(started_at DESC);
   `,
+  `ALTER TABLE deployments ADD COLUMN backend TEXT NOT NULL DEFAULT 'vllm';
+   ALTER TABLE deployments ADD COLUMN model_source TEXT;
+   ALTER TABLE deployment_runs ADD COLUMN backend TEXT NOT NULL DEFAULT 'vllm';
+   ALTER TABLE deployment_runs ADD COLUMN model TEXT;
+   ALTER TABLE deployment_runs ADD COLUMN host TEXT;`,
 ];
 
-function migrate(db: Database.Database) {
+export function migrate(db: Database.Database) {
   const current = db.pragma("user_version", { simple: true }) as number;
   for (let v = current; v < MIGRATIONS.length; v++) {
     db.exec("BEGIN");

@@ -74,9 +74,9 @@ export function DeploymentDetail({ runId }: { runId: number }) {
 
   const series = useMemo(
     () => ({
-      tok: history.map((m) => m.genTokS),
-      running: history.map((m) => m.requestsRunning),
-      kv: history.map((m) => m.kvCachePct),
+      tok: history.map((m) => m.genTokS).filter((v): v is number => v != null),
+      running: history.map((m) => m.requestsRunning).filter((v): v is number => v != null),
+      kv: history.map((m) => m.kvCachePct).filter((v): v is number => v != null),
       ttft: history.map((m) => m.ttftP95Ms ?? 0),
     }),
     [history],
@@ -138,6 +138,7 @@ export function DeploymentDetail({ runId }: { runId: number }) {
             <StatusLabel status={d.status} />
             <span className="text-[14px] font-medium">{d.servedName ?? d.name}</span>
           </div>
+          <Readout label="backend" value={d.backend === "llamacpp" ? "llama.cpp" : "vLLM"} size="sm" />
           <Readout label="model" value={d.model} size="sm" />
           <Readout label="endpoint" value={`${d.host}:${d.port}`} size="sm" />
           <Readout label="pid" value={d.pid ?? "—"} size="sm" />
@@ -179,7 +180,7 @@ export function DeploymentDetail({ runId }: { runId: number }) {
               label="queued"
               value={fixed(m.requestsWaiting, 0)}
               series={[]}
-              warn={m.requestsWaiting > 0}
+              warn={(m.requestsWaiting ?? 0) > 0}
             />
             <MetricCell
               label="ttft p95"
@@ -190,7 +191,7 @@ export function DeploymentDetail({ runId }: { runId: number }) {
             <MetricCell
               label="kv cache"
               value={fixed(m.kvCachePct, 0)}
-              unit="%"
+              unit={m.kvCachePct != null ? "%" : undefined}
               series={series.kv}
               max={100}
               last

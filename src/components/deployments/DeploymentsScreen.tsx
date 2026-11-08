@@ -113,7 +113,7 @@ export function DeploymentsScreen() {
                     <td className="px-3 py-1.5">
                       <span className="flex items-center gap-2">
                         <StatusDot status={running ? running.status : "idle"} />
-                        {p.name}
+                        {p.name} <span className="plate">{p.backend === "llamacpp" ? "llama.cpp" : "vLLM"}</span>
                       </span>
                     </td>
                     <td className="px-3 py-1.5 truncate max-w-0 text-ink-dim">{p.model}</td>
@@ -161,6 +161,7 @@ export function DeploymentsScreen() {
 }
 
 interface HistoryRow {
+  backend: string;
   id: number;
   model: string | null;
   port: number;
@@ -187,7 +188,7 @@ function RunHistory() {
         <tbody>
           {rows.map((r) => (
             <tr key={r.id} className="hairline-t">
-              <td className="px-3 py-1.5 w-24 plate">{r.status}</td>
+              <td className="px-3 py-1.5 w-24 plate">{r.status} · {r.backend === "llamacpp" ? "llama.cpp" : "vLLM"}</td>
               <td className="px-3 py-1.5 truncate max-w-0 text-ink-dim">
                 {r.model ?? "—"}
               </td>

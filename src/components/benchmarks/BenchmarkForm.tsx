@@ -121,7 +121,7 @@ export function BenchmarkForm() {
   const needsTokenizer =
     dataKind === "synthetic_text" &&
     !tokenizer.trim() &&
-    !(selected?.model ?? "").includes("/");
+    (selected?.backend === "llamacpp" || !(selected?.model ?? "").includes("/"));
 
   const submit = async () => {
     setBusy(true);
@@ -355,8 +355,7 @@ export function BenchmarkForm() {
           {needsTokenizer && (
             <Note>
               Synthetic prompts are tokenized before they are sent, and GuideLLM resolves
-              the tokenizer from the model name. This deployment&apos;s name is not a Hugging
-              Face repository, so name a tokenizer above — usually the model you are serving.
+              the tokenizer from the model name. Choose an explicit tokenizer repository for GGUF deployments and served aliases.
             </Note>
           )}
         </Panel>

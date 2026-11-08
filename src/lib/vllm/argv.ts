@@ -1,4 +1,4 @@
-import type { FlagSpec } from "@/lib/types";
+import type { FlagSpec, BackendId, ModelSource } from "@/lib/types";
 
 /**
  * Turns a launch specification into the exact argv passed to `vllm serve`.
@@ -12,6 +12,10 @@ import type { FlagSpec } from "@/lib/types";
 export type FlagValue = string | number | boolean | string[];
 
 export interface LaunchSpec {
+  backend?: BackendId;
+  modelSource?: ModelSource | null;
+  executable?: string;
+  host?: string;
   deploymentId?: number | null;
   name: string;
   /** HF repo id or a local path. Passed positionally. */

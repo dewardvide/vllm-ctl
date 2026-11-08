@@ -1,3 +1,4 @@
+import { isLfm } from "@/lib/backends/llamacpp";
 import { fail, guard, ok, readJson } from "@/lib/server/api";
 import { buildChatBody, chatErrorMessage, type ChatMessage, type ChatParams } from "@/lib/vllm/chat";
 import { baseUrl } from "@/lib/vllm/host";
@@ -42,12 +43,14 @@ export async function POST(req: Request) {
     }
     const model = live.servedName ?? live.model;
 
+    const effectiveParams = live.backend === "llamacpp" && isLfm(live.model)
+      ? { ...params, temperature: params.temperature ?? 0, system: params.system ?? "You are a helpful assistant. Respond in text only." } : params;
     let upstream: Response;
     try {
       upstream = await fetch(`${baseUrl(live.host, live.port)}/v1/chat/completions`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(buildChatBody(model, messages, params)),
+        body: JSON.stringify(buildChatBody(model, messages, effectiveParams)),
         // Carries a cancelled request through to the engine. Without it,
         // pressing stop leaves the engine generating to completion, holding a
         // scheduler slot and skewing every metric on the page it sits under.

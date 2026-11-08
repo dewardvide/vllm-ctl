@@ -72,7 +72,12 @@ export const TRANSITIONAL_STATUSES: readonly DeploymentStatus[] = [
   "stopping",
 ];
 
+export type BackendId = "vllm" | "llamacpp";
+export interface ModelSource { kind: "hub" | "local"; quantization?: string; filename?: string; }
+
 export interface DeploymentProfile {
+  backend: BackendId;
+  modelSource: ModelSource | null;
   id: number;
   name: string;
   model: string;
@@ -87,6 +92,7 @@ export interface DeploymentProfile {
 
 /** Live view of a supervised process. */
 export interface LiveDeployment {
+  backend: BackendId;
   runId: number;
   deploymentId: number | null;
   name: string;
@@ -110,22 +116,22 @@ export interface LiveDeployment {
 /** Derived engine metrics for one deployment at one instant. */
 export interface EngineMetrics {
   ts: number;
-  genTokS: number;
-  promptTokS: number;
-  requestsRunning: number;
-  requestsWaiting: number;
-  kvCachePct: number;
+  genTokS: number | null;
+  promptTokS: number | null;
+  requestsRunning: number | null;
+  requestsWaiting: number | null;
+  kvCachePct: number | null;
   ttftP50Ms: number | null;
   ttftP95Ms: number | null;
   ttftP99Ms: number | null;
   itlP50Ms: number | null;
   itlP95Ms: number | null;
   prefixHitPct: number | null;
-  preemptions: number;
+  preemptions: number | null;
   /** Totals since the server started, useful as an absolute counter display. */
-  totalPromptTokens: number;
-  totalGenTokens: number;
-  totalRequests: number;
+  totalPromptTokens: number | null;
+  totalGenTokens: number | null;
+  totalRequests: number | null;
 }
 
 /* -------------------------------------------------------------------------- */

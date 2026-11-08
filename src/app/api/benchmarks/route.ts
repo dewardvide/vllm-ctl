@@ -41,6 +41,7 @@ export async function POST(req: Request) {
       const live = config.deploymentRunId
         ? supervisor().list().find((d) => d.runId === config.deploymentRunId)
         : null;
+      if (live?.backend === "llamacpp") return fail("Set an explicit tokenizer repository for llama.cpp synthetic benchmarks.");
       if (live?.model?.includes("/")) config.tokenizer = live.model;
       else if (config.model?.includes("/")) config.tokenizer = config.model;
       else {

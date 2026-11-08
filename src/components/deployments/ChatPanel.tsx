@@ -1,5 +1,7 @@
 "use client";
 
+import { isLfm } from "@/lib/backends/llamacpp";
+import { DEFAULT_CHAT_PARAMS } from "@/lib/vllm/chat";
 import { useEffect, useRef, useState } from "react";
 
 import { useChat, type ChatTurn } from "@/lib/client/use-chat";
@@ -23,7 +25,7 @@ export function ChatPanel({
   runId: number;
   deployment: LiveDeployment;
 }) {
-  const { turns, params, setParams, streaming, send, stop, reset } = useChat(runId);
+  const { turns, params, setParams, streaming, send, stop, reset } = useChat(runId, deployment.backend === "llamacpp" && isLfm(deployment.model) ? { ...DEFAULT_CHAT_PARAMS, temperature: 0, system: "You are a helpful assistant. Respond in text only." } : DEFAULT_CHAT_PARAMS);
   const [draft, setDraft] = useState("");
   const [showParams, setShowParams] = useState(false);
   const [follow, setFollow] = useState(true);

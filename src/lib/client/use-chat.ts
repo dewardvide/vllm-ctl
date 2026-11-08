@@ -50,9 +50,9 @@ export interface UseChat {
   reset: () => void;
 }
 
-export function useChat(runId: number): UseChat {
+export function useChat(runId: number, initialParams: ChatParams = DEFAULT_CHAT_PARAMS): UseChat {
   const [turns, setTurns] = useState<ChatTurn[]>([]);
-  const [params, setParams] = useState<ChatParams>(DEFAULT_CHAT_PARAMS);
+  const [params, setParams] = useState<ChatParams>(initialParams);
   const [streaming, setStreaming] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);

@@ -32,7 +32,7 @@ export function DeploymentCard({
   return (
     <article className="hairline-t">
       <header className="flex items-center gap-2.5 px-3 h-8">
-        <StatusDot status={d.status} />
+        <StatusDot status={d.status} /><span className="plate">{d.backend === "llamacpp" ? "llama.cpp" : "vLLM"}</span>
         <Link
           href={`/deployments/${d.runId}`}
           className="text-[13px] font-medium truncate hover:text-signal transition-colors"
@@ -63,7 +63,7 @@ export function DeploymentCard({
           <Readout
             label="gen tok/s"
             value={fixed(m.genTokS, 1)}
-            color={m.genTokS > 0 ? THERMAL.t2 : undefined}
+            color={(m.genTokS ?? 0) > 0 ? THERMAL.t2 : undefined}
           />
           <Readout
             label="ttft p99"
@@ -80,11 +80,11 @@ export function DeploymentCard({
           <Readout
             label="running / queued"
             value={`${fixed(m.requestsRunning, 0)} / ${fixed(m.requestsWaiting, 0)}`}
-            color={m.requestsWaiting > 0 ? THERMAL.t3 : undefined}
+            color={(m.requestsWaiting ?? 0) > 0 ? THERMAL.t3 : undefined}
           />
           <div className="flex flex-col gap-1 justify-center min-w-0">
-            <span className="plate">kv cache {fixed(m.kvCachePct, 0)}%</span>
-            <Meter value={m.kvCachePct} color={rampPct(m.kvCachePct)} />
+            <span className="plate">kv cache {fixed(m.kvCachePct, 0)}{m.kvCachePct != null ? "%" : ""}</span>
+            {m.kvCachePct != null && <Meter value={m.kvCachePct} color={rampPct(m.kvCachePct)} />}
             <span className="plate truncate">
               {compact(m.totalGenTokens)} tokens generated
             </span>
