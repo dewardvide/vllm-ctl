@@ -66,3 +66,15 @@ describe("getSettings", () => {
     expect(getSettings().serveHost).toBe("192.168.1.5");
   });
 });
+
+it("adds llama.cpp defaults while preserving legacy settings", async () => {
+  const { getSettings, invalidateSettings } = await import("./settings");
+  const old = { ...getSettings(), serveHost: "127.0.0.2" } as Record<string, unknown>;
+  delete old.llamaExecutable; delete old.llamaInvocation; delete old.llamaCacheDir;
+  fs.writeFileSync(path.join(dir, "settings.json"), JSON.stringify(old));
+  invalidateSettings();
+  expect(getSettings().serveHost).toBe("127.0.0.2");
+  expect(getSettings().llamaExecutable).toBeNull();
+  expect(getSettings().llamaInvocation).toBe("server");
+  expect(getSettings().llamaCacheDir).toContain("llama.cpp");
+});

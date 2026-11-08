@@ -1,3 +1,4 @@
+import { probeLlama } from "@/lib/backends/runtime";
 import { guard, ok, readJson } from "@/lib/server/api";
 import {
   detectCudaHome,
@@ -20,15 +21,17 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   return guard(async () => {
     const settings = getSettings();
-    const [vllmVersion, guidellmVersion, gpu] = await Promise.all([
+    const [vllmVersion, guidellmVersion, gpu, llama] = await Promise.all([
       getVllmVersion(),
       benchmarks().guidellmVersion(),
       nvidiaSmiAvailable(),
+      probeLlama().then((info) => ({ executable: info.executable, mode: info.mode, version: info.version, error: null })).catch((e: Error) => ({ error: e.message })),
     ]);
 
     return ok({
       settings: { ...settings, hfToken: settings.hfToken ? "••••••••" : null },
       environment: {
+        llama,
         vllmVersion,
         guidellmVersion,
         guidellmPinned: PINNED_GUIDELLM,

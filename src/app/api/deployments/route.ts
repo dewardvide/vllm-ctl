@@ -1,3 +1,5 @@
+import { buildLlamaArgv } from "@/lib/backends/llamacpp";
+import type { BackendId, ModelSource } from "@/lib/types";
 import { getDb } from "@/lib/server/db";
 import { fail, guard, ok, readJson } from "@/lib/server/api";
 import type { DeploymentProfile } from "@/lib/types";
@@ -7,6 +9,8 @@ export const dynamic = "force-dynamic";
 
 export function rowToProfile(r: Record<string, unknown>): DeploymentProfile {
   return {
+    backend: (r.backend as BackendId) ?? "vllm",
+    modelSource: r.model_source ? JSON.parse(r.model_source as string) : null,
     id: r.id as number,
     name: r.name as string,
     model: r.model as string,
@@ -30,11 +34,13 @@ export async function GET() {
 }
 
 interface CreateBody {
+  backend?: BackendId;
+  modelSource?: ModelSource;
   name: string;
   model: string;
   servedName?: string | null;
   port?: number | null;
-  flags?: Record<string, unknown>;
+  flags?: Record<string, string | number | boolean | string[]>;
   notes?: string | null;
 }
 
@@ -44,11 +50,13 @@ export async function POST(req: Request) {
     if (!body.name?.trim()) return fail("Give the deployment a name.");
     if (!body.model?.trim()) return fail("Choose a model to serve.");
 
+    if (body.backend && !["vllm", "llamacpp"].includes(body.backend)) return fail("Unknown backend.");
+    if (body.backend === "llamacpp") buildLlamaArgv({ ...body, flags: body.flags ?? {} }, { host: "127.0.0.1", port: body.port ?? 8000 }, "server");
     const now = Date.now();
     const info = getDb()
       .prepare(
-        `INSERT INTO deployments (name, model, served_name, port, flags, notes, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?)`,
+        `INSERT INTO deployments (name, model, served_name, port, flags, notes, created_at, updated_at, backend, model_source)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         body.name.trim(),
@@ -59,6 +67,8 @@ export async function POST(req: Request) {
         body.notes?.trim() || null,
         now,
         now,
+        body.backend ?? "vllm",
+        body.modelSource ? JSON.stringify(body.modelSource) : null,
       );
 
     const row = getDb()

@@ -9,8 +9,8 @@ export async function GET() {
   return guard(() => {
     const runs = getDb()
       .prepare(
-        `SELECT r.id, r.port, r.status, r.started_at, r.stopped_at, r.error,
-                COALESCE(d.model, '') AS model
+        `SELECT r.backend, r.id, r.port, r.status, r.started_at, r.stopped_at, r.error,
+                COALESCE(r.model, d.model, '') AS model
            FROM deployment_runs r
            LEFT JOIN deployments d ON d.id = r.deployment_id
           WHERE r.status NOT IN ('starting','loading','healthy','stopping')

@@ -358,3 +358,55 @@ any step breaks, which makes it usable as a smoke test after a change.
 
 See [LLD.md](./LLD.md) for the design: architecture, the option-schema parser,
 the deployment lifecycle, the VRAM model, and the known limitations.
+
+## llama.cpp deployments
+
+vLLM remains the default backend. Select **llama.cpp** in the deployment form to
+serve a Hugging Face GGUF repository or a readable local `.gguf` file. Install
+llama.cpp yourself before using this backend; the app does not install or upgrade
+it. Settings discovers `llama-server` first, then `llama` on PATH. Alternatively,
+set the executable's full path and select **llama-server** or **llama serve** as
+its invocation mode. Version/help probes time out after ten seconds, and launches
+reject options absent from the installed binary's help.
+
+For a Hub source, enter `owner/repository` and either a quantization such as
+`Q4_K_M` or an exact Hub filename. For local sources, enter a filesystem path;
+spaces are supported. Optional controls cover context size, GPU layers (`0` for
+CPU-only inference), CPU threads, parallel slots, batch sizes, and projector
+path. Unset performance options retain runtime defaults. The app owns the bind
+address, port, model source, alias, and metrics switch. Preview/copy uses the same
+argument builder as launch; command import remains vLLM-only.
+
+The **LFM3-Omni preset** selects `LiquidAI/LFM3-Omni-2B-GGUF` with `Q4_K_M`,
+`--reasoning off`, temperature zero, and a text-response system prompt in chat.
+It requires a recognizable **b11960 / v0.8.0 or newer** build. Upgrade the executable
+if the compatibility check fails. Hub launches preserve automatic companion
+projector downloads. See the [Liquid AI model instructions](https://huggingface.co/LiquidAI/LFM3-Omni-2B-GGUF).
+
+Hugging Face credentials are passed through `HF_TOKEN`, not command arguments.
+The separate llama.cpp cache setting is passed through `LLAMA_CACHE`; these
+runtime-managed downloads are outside the Models page's Hugging Face cache
+manager. Local model files and explicit projectors must already exist.
+
+Saved profiles, start/stop/restart, logs, observed GPU/host memory, streaming and
+non-streaming text chat, cancellation, and GuideLLM targets work with both
+backends. Restarts retain the run's executable, arguments, backend, and bind
+address even after profile/settings edits. Token throughput comes from counter
+deltas; unavailable engine metrics show “—”. Synthetic benchmarks targeting
+llama.cpp require an explicit tokenizer repository. See the
+[llama.cpp server API](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md).
+
+Memory estimates are unavailable for llama.cpp, so its launches bypass the vLLM
+VRAM gate. This is not a guarantee that a model fits. First-release scope is one
+model per managed Linux process; media uploads, speech generation, realtime
+voice, automatic installation, app-managed GGUF downloads, router mode, and
+external-server attachment are not supported.
+
+### Backend verification
+
+Run `npm test`, `npm run lint`, `npm run typecheck`, and `npm run build`.
+Lifecycle tests bind local ports and spawn isolated fixture processes. Browser
+acceptance uses `node tools/llamacpp-e2e.mjs` after a production build; it creates
+separate temporary app data and checks settings, profile editing, launch,
+streaming/cancellation, restart, and a local CPU-only source. This fixture test
+checks integration, not real model inference or hardware suitability.

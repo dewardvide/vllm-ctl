@@ -174,7 +174,7 @@ function buildAlerts(
     if (d.status === "crashed" || d.status === "failed") {
       out.push(`${d.name} ${d.status}: ${d.error ?? "see its log for details."}`);
     }
-    if (d.metrics && d.metrics.requestsWaiting > 0 && d.metrics.kvCachePct > 90) {
+    if (d.metrics && (d.metrics.requestsWaiting ?? 0) > 0 && (d.metrics.kvCachePct ?? 0) > 90) {
       out.push(
         `${d.name} is queueing requests with the KV cache ${fixed(d.metrics.kvCachePct, 0)}% full — it is at capacity.`,
       );

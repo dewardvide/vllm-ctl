@@ -12,6 +12,8 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 interface StartBody {
+  backend?: import("@/lib/types").BackendId;
+  modelSource?: import("@/lib/types").ModelSource;
   /** Start a saved profile… */
   deploymentId?: number;
   /** …or an ad-hoc configuration. */
@@ -28,6 +30,8 @@ export async function POST(req: Request) {
   return guard(async () => {
     const body = await readJson<StartBody>(req);
 
+    let backend = body.backend ?? "vllm";
+    let modelSource = body.modelSource;
     let name = body.name ?? "";
     let model = body.model ?? "";
     let servedName = body.servedName ?? null;
@@ -39,6 +43,8 @@ export async function POST(req: Request) {
         .prepare("SELECT * FROM deployments WHERE id = ?")
         .get(body.deploymentId) as Record<string, unknown> | undefined;
       if (!row) return fail("That deployment profile no longer exists.", 404);
+      backend = (row.backend as typeof backend) ?? "vllm";
+      modelSource = row.model_source ? JSON.parse(row.model_source as string) : undefined;
       name = (row.name as string) ?? name;
       model = (row.model as string) ?? model;
       servedName = (row.served_name as string) ?? null;
@@ -50,7 +56,9 @@ export async function POST(req: Request) {
     if (!name.trim()) name = model.split("/").pop() ?? model;
 
     // --- the guard rail -----------------------------------------------------
-    if (!body.force) {
+    if (!["vllm", "llamacpp"].includes(backend)) return fail("Unknown backend.");
+    if (port != null && (!Number.isInteger(port) || port < 1024 || port > 65535)) return fail("Invalid port.");
+    if (backend === "vllm" && !body.force) {
       const check = await checkVram(model, flags);
       if (check && !check.fits) {
         return Response.json(
@@ -66,6 +74,8 @@ export async function POST(req: Request) {
     }
 
     const { runId, port: assigned } = await supervisor().start({
+      backend,
+      modelSource,
       deploymentId: body.deploymentId ?? null,
       name,
       model,

@@ -1,4 +1,5 @@
 import "server-only";
+import { llamaMetrics } from "@/lib/backends/llama-metrics";
 
 import { getDb } from "@/lib/server/db";
 import { hub } from "@/lib/server/broadcast";
@@ -65,16 +66,16 @@ class MetricsPoller {
 
   private async pollAll() {
     const live = supervisor().list().filter((d) => d.status === "healthy");
-    if (live.length === 0) return;
+
 
     // Drop state for deployments that have gone away.
     const alive = new Set(live.map((d) => d.runId));
-    for (const id of [...this.prev.keys()]) if (!alive.has(id)) this.forget(id);
+    for (const id of [...this.latest.keys()]) if (!alive.has(id)) this.forget(id);
 
     let changed = false;
     await Promise.all(
       live.map(async (d) => {
-        const m = await this.pollOne(d.runId, d.host, d.port);
+        const m = await this.pollOne(d.runId, d.host, d.port, d.backend);
         if (m) changed = true;
       }),
     );
@@ -85,10 +86,17 @@ class MetricsPoller {
     runId: number,
     host: string,
     port: number,
+    backend: string,
   ): Promise<EngineMetrics | null> {
     const text = await scrape(host, port);
     if (text === null) return null;
 
+    if (backend === "llamacpp") {
+      const out = llamaMetrics(text, Date.now(), this.latest.get(runId) ?? null);
+      this.latest.set(runId, out);
+      this.persist(runId, out);
+      return out;
+    }
     const metrics = parsePrometheusText(text);
     const now = Date.now();
 

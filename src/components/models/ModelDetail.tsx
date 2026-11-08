@@ -36,6 +36,7 @@ export function ModelDetail({ repo, onClose }: { repo: string; onClose: () => vo
   const [gpuUtil, setGpuUtil] = useState(0.9);
   const [estimate, setEstimate] = useState<VramEstimate | null>(null);
   const { setProjection } = useDeployments();
+  const isGguf = detail?.quantization === "gguf" || /gguf/i.test(repo) || !!detail?.files.some(f => /\.gguf$/i.test(f.path));
 
   useEffect(() => {
     let cancelled = false;
@@ -58,16 +59,16 @@ export function ModelDetail({ repo, onClose }: { repo: string; onClose: () => vo
 
   // Publish the projection so the shell's headroom rail draws a ghost segment.
   useEffect(() => {
-    if (!estimate?.known) {
+    if (isGguf || !estimate?.known) {
       setProjection(null);
       return;
     }
     setProjection({ label: repo, mib: estimate.totalGiB * 1024 });
     return () => setProjection(null);
-  }, [estimate, repo, setProjection]);
+  }, [estimate, repo, setProjection, isGguf]);
 
   useEffect(() => {
-    if (!detail?.config) return;
+    if (isGguf || !detail?.config) return;
     let cancelled = false;
     api
       .post<{ estimate: VramEstimate }>("/api/vram", {
@@ -81,7 +82,7 @@ export function ModelDetail({ repo, onClose }: { repo: string; onClose: () => vo
     return () => {
       cancelled = true;
     };
-  }, [detail, contextLen, kvDtype, gpuUtil]);
+  }, [detail, contextLen, kvDtype, gpuUtil, isGguf]);
 
   const stops = useMemo(() => {
     const max = detail?.config?.maxPositionEmbeddings ?? 131072;
@@ -101,7 +102,7 @@ export function ModelDetail({ repo, onClose }: { repo: string; onClose: () => vo
         <span className="flex gap-1">
           {detail && (
             <Link
-              href={`/deployments/new?model=${encodeURIComponent(repo)}&max-model-len=${contextLen}`}
+              href={`/deployments/new?model=${encodeURIComponent(repo)}&${isGguf ? "backend=llamacpp" : `max-model-len=${contextLen}`}`}
             >
               <Button tone="primary">deploy this</Button>
             </Link>
@@ -170,14 +171,15 @@ export function ModelDetail({ repo, onClose }: { repo: string; onClose: () => vo
             </div>
           )}
 
-          {!cfg && (
+          {isGguf && <p className="p-3 plate">Memory estimate unavailable for llama.cpp</p>}
+          {!cfg && !isGguf && (
             <p className="px-3 py-3 text-[12px] text-ink-faint">
               This repository has no readable <code>config.json</code>, so its memory use
               cannot be estimated. GGUF builds are packaged this way.
             </p>
           )}
 
-          {cfg && (
+          {cfg && !isGguf && (
             <div className="flex flex-col gap-2 px-3 py-2.5 hairline-t">
               <span className="plate">will it fit</span>
 

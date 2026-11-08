@@ -8,6 +8,9 @@ import { isLoopback } from "@/lib/vllm/host";
 import { Button, Note, Panel, Problem, Readout } from "@/components/ui/primitives";
 
 interface Settings {
+  llamaExecutable: string | null;
+  llamaInvocation: "server" | "serve";
+  llamaCacheDir: string;
   vllmBinDir: string | null;
   guidellmBinDir: string | null;
   cudaHome: string | null;
@@ -22,6 +25,7 @@ interface Settings {
 }
 
 interface Environment {
+  llama: { executable?: string; version?: string; error: string | null };
   vllmVersion: string | null;
   guidellmVersion: string | null;
   guidellmPinned: string;
@@ -152,6 +156,15 @@ export function SettingsScreen() {
           </div>
         </Panel>
 
+        <Panel label="llama.cpp">
+          <div className="flex flex-col gap-3 p-3">
+            <p className="plate">{env.llama.error ?? `${env.llama.executable} · ${env.llama.version}`}</p>
+            <label>Executable path (blank: discover on PATH)<input className="w-full" value={settings.llamaExecutable ?? ""} onChange={e => set("llamaExecutable", e.target.value || null)} /></label>
+            <label>Invocation mode<select className="w-full" value={settings.llamaInvocation} onChange={e => set("llamaInvocation", e.target.value as "server" | "serve")}><option value="server">llama-server</option><option value="serve">llama serve</option></select></label>
+            <label>llama.cpp cache directory<input className="w-full" value={settings.llamaCacheDir} onChange={e => set("llamaCacheDir", e.target.value)} /></label>
+            <p className="plate">Install llama.cpp yourself. Its downloads are separate from the Hugging Face cache manager.</p>
+          </div>
+        </Panel>
         <Panel label="serving">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 px-3 py-2.5 hairline-t">
             <label className="flex flex-col gap-1">

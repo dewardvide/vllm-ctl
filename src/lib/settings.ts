@@ -15,6 +15,9 @@ import { PATHS, defaultHfCacheDir, hfTokenFile } from "./paths";
  */
 
 export const SettingsSchema = z.object({
+  llamaExecutable: z.string().nullable().default(null),
+  llamaInvocation: z.enum(["server", "serve"]).default("server"),
+  llamaCacheDir: z.string().default(path.join(os.homedir(), ".cache", "llama.cpp")),
   /**
    * Directory containing the `vllm` executable — i.e. a virtualenv's `bin`.
    * Auto-detected on first run; see `detectVllmBinDir`.
@@ -48,6 +51,9 @@ export type Settings = z.infer<typeof SettingsSchema>;
 
 function defaults(): Settings {
   return {
+    llamaExecutable: null,
+    llamaInvocation: "server",
+    llamaCacheDir: path.join(os.homedir(), ".cache", "llama.cpp"),
     vllmBinDir: detectVllmBinDir(),
     guidellmBinDir: detectGuidellmBinDir(),
     cudaHome: detectCudaHome(detectVllmBinDir()),

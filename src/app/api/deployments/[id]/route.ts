@@ -1,3 +1,4 @@
+import { buildLlamaArgv } from "@/lib/backends/llamacpp";
 import { getDb } from "@/lib/server/db";
 import { fail, guard, intParam, ok, readJson } from "@/lib/server/api";
 
@@ -25,10 +26,14 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     const row = getDb().prepare("SELECT * FROM deployments WHERE id = ?").get(id);
     if (!row) return fail("That deployment profile no longer exists.", 404);
 
+    const existing = rowToProfile(row as Record<string, unknown>);
+    const merged = { ...existing, ...body } as typeof existing;
+    if (!["vllm", "llamacpp"].includes(merged.backend)) return fail("Unknown backend.");
+    if (merged.backend === "llamacpp") buildLlamaArgv(merged, { host: "127.0.0.1", port: merged.port ?? 8000 }, "server");
     getDb()
       .prepare(
         `UPDATE deployments
-            SET name = COALESCE(?, name),
+            SET backend = ?, model_source = ?, name = COALESCE(?, name),
                 model = COALESCE(?, model),
                 served_name = ?,
                 port = ?,
@@ -38,6 +43,8 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
           WHERE id = ?`,
       )
       .run(
+        merged.backend,
+        merged.modelSource ? JSON.stringify(merged.modelSource) : null,
         (body.name as string) ?? null,
         (body.model as string) ?? null,
         (body.servedName as string) ?? null,
