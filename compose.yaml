@@ -1,33 +1,48 @@
-# vLLM Admin UI — deployable as a Docker Compose resource (e.g. Coolify).
+# vLLM Admin UI — host-integrated deployment (Coolify docker-compose resource).
 #
-# Environment (all optional):
-#   PORT            3333   port the UI listens on inside the container (and is published on)
-#   VLLM_BASE_URL   http://host.docker.internal:8000
-#                   Where the host's model server lives, as seen from the container.
-#                   Inside the container 127.0.0.1 is the container itself, so use
-#                   host.docker.internal (mapped to the host via extra_hosts below).
-#                   NOTE: the app currently derives engine URLs from each deployment's
-#                   bind host/port and does not read this variable itself; it is
-#                   passed through so the intended address is configured in one place.
-#   HF_TOKEN        (empty)  Hugging Face token for gated model downloads
+# This app is a *supervisor*: it spawns the host's `vllm` / `llama` binaries,
+# scans /proc for their pids, reads host CPU from /proc/stat, runs host
+# `guidellm` for benchmarks, downloads with the host `hf` CLI, and polls
+# `nvidia-smi`. So the container shares the host's network and PID namespace and
+# bind-mounts the host userland it needs. Anything less and half the UI is dead.
+#
+# Requires: NVIDIA driver + device nodes on the host (no nvidia-container-toolkit
+# needed — devices and libcuda/libnvidia-ml are mounted directly).
+#
+# Environment:
+#   PORT            3333   listen port (host network, so this is the real port)
+#   HF_TOKEN        (empty) Hugging Face token for gated downloads
 # App state (SQLite db, settings, logs, benchmark output) lives in the
-# `vllm-admin-data` volume, mounted at /data.
+# `vllm-admin-data` volume at /data.
 services:
   vllm-admin-ui:
     build: .
-    image: vllm-admin-ui:latest
+    image: vllm-admin-ui:host-integrated
     restart: unless-stopped
-    ports:
-      - "${PORT:-3333}:3333"
+    network_mode: host
+    pid: host
     environment:
       PORT: "3333"
       VLLM_ADMIN_DATA_DIR: /data
-      VLLM_BASE_URL: ${VLLM_BASE_URL:-http://host.docker.internal:8000}
+      HOME: /home/dewardvide
+      PATH: /home/dewardvide/.local/bin:/home/dewardvide/granite-inference/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       HF_TOKEN: ${HF_TOKEN:-}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    devices:
+      - /dev/nvidia0
+      - /dev/nvidiactl
+      - /dev/nvidia-uvm
+      - /dev/nvidia-uvm-tools
+      - /dev/nvidia-modeset
+      - /dev/dri
     volumes:
+      # App state
       - vllm-admin-data:/data
+      # Host userland the supervisor launches: venv, uv-managed python, llama.cpp,
+      # guidellm, HF cache, hf token. Read-write because downloads write the cache.
+      - /home/dewardvide:/home/dewardvide
+      # NVIDIA driver libraries and the nvidia-smi binary the VRAM gauge calls.
+      - /usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:ro
+      - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3333/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
