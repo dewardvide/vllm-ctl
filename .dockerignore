@@ -1,0 +1,17 @@
+.git
+.github
+node_modules
+.next
+out
+coverage
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+*.db
+*.db-*
+*.log
+Dockerfile
+compose.yaml
+.dockerignore
+docs
