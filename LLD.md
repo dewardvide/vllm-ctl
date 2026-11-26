@@ -1,11 +1,14 @@
 # vLLM Admin UI — Low-Level Design
 
-A local-first control plane for vLLM: manage models, run them with full control
-over every engine option, watch the machine in real time, and benchmark what it
-can actually serve.
+A local-first control plane for model serving: manage models, run them on vLLM
+(with full control over every engine option) or llama.cpp, watch the machine in
+real time, and benchmark what it can actually serve.
 
 This document explains how it is built and, where a decision was not obvious,
 why it was made that way. It is written for someone about to change the code.
+A diagram-first companion lives in [`docs/architecture.html`](docs/architecture.html).
+
+Last reviewed against commit `e5509d4` (2026-11-26).
 
 ---
 
@@ -17,9 +20,11 @@ The app targets a single workstation, not a cluster:
 |---|---|
 | GPU | 1× RTX 3090, 24 GiB, driver 595.84, CUDA 13.2 |
 | Host | 12 cores, 15 GiB RAM |
-| vLLM | 0.26.0, in a uv virtualenv (not on `PATH`) |
+| vLLM | 0.26.0, in a uv virtualenv (not on `PATH`) — the default backend |
+| llama.cpp | optional second backend, installed by the user; found on `PATH` or configured |
 | GuideLLM | 0.7.3, in an isolated `uv tool` environment |
 | Runtime | Node 22, Next.js 16 (App Router), React 19, Tailwind v4 |
+| Port | 3333; run with `npm start`, `npm run dev` or the container (§16) |
 | CUDA | toolkit from torch's own wheels (`nvidia/cu13`), pinned to 13.0 to match `torch 2.11.0+cu130` |
 
 Three constraints shape everything below:
@@ -38,20 +43,21 @@ Three constraints shape everything below:
 ## 2. Architecture
 
 ```
-Browser ──SSE──▶ /api/stream/*  ──reads──▶ in-memory ring buffers
+Browser ──SSE──▶ /api/stream/*  ──reads──▶ in-memory state and ring buffers
    │                                              ▲
-   └──fetch──▶  /api/*  (mutations)               │ 1 Hz / 2 Hz
-                                                  │
+   └──fetch──▶  /api/*  (mutations, chat proxy)   │ telemetry 1 s
+                                                  │ engine metrics 2 s
               ┌───────────────────────────────────┴─────────────┐
-              │  module-scope singletons                          │
-              │  sampler · supervisor · metricsPoller             │
+              │  per-process singletons (on globalThis)           │
+              │  sampler · supervisor · metricsPoller · hub       │
               │  · downloads · benchmarks                         │
               └───────────────┬──────────────────────────────────┘
                               │ spawns
-                              ├── vllm serve      (one per deployment)
-                              ├── hf download     (one per download)
-                              ├── guidellm run    (one at a time)
-                              └── nvidia-smi      (one per tick)
+                              ├── vllm serve               (one per vLLM deployment)
+                              ├── llama-server | llama serve (one per llama.cpp deployment)
+                              ├── hf download              (one per download)
+                              ├── guidellm run             (one at a time)
+                              └── nvidia-smi               (two one-shot queries per tick)
                               │
                           SQLite (WAL)  ~/.vllm-admin/vllm-admin.db
 ```
@@ -60,8 +66,8 @@ Singletons are stashed on `globalThis` so Next's dev-mode module reloading
 cannot produce two samplers or orphan a supervisor's process registry.
 
 `src/instrumentation.ts` runs once per server process before the first request.
-It starts the sampler and metrics poller, prunes old telemetry, and reconciles
-anything left behind by an unclean shutdown.
+It prunes old telemetry, starts the sampler and metrics poller, and reconciles
+deployments, downloads and benchmarks left behind by an unclean shutdown.
 
 ---
 
@@ -88,11 +94,16 @@ tested alone.
 | `lib/vllm/argv.ts` | Builds and parses `vllm serve` command lines. |
 | `lib/vllm/host.ts` | Bind host vs. connect host; the one place a wildcard becomes a dialable address. |
 | `lib/vllm/chat.ts` | The OpenAI chat-completions wire format as vLLM speaks it: request building and SSE frame parsing. Shared by the proxy route and the client hook. |
-| `lib/vllm/supervisor.ts` | Process registry and lifecycle FSM. |
+| `lib/deployments/supervisor.ts` | Process registry and lifecycle FSM for both backends. |
+| `lib/vllm/supervisor.ts` | One-line re-export of the above, kept for existing imports. |
+| `lib/backends/runtime.ts` | Resolves the executable and argv for a launch; probes llama.cpp's version and `--help`. |
+| `lib/backends/adapters.ts` | The per-backend differences: child environment, log classification, health check. |
+| `lib/backends/llamacpp.ts` | Pure llama.cpp argv builder, option allow-list and LFM3 preset. |
+| `lib/backends/llama-metrics.ts` | Maps llama.cpp's Prometheus counters onto `EngineMetrics`. |
 | `lib/vllm/log-ring.ts` | Bounded per-process log storage and line splitting. |
 | `lib/vllm/phase.ts` | Turns vLLM log lines into phase labels and fatal-error messages. |
 | `lib/vllm/prometheus.ts` | Prometheus text parsing, histogram quantiles, counter rates. |
-| `lib/vllm/metrics.ts` | 2 Hz scraper that turns those into displayable metrics. |
+| `lib/vllm/metrics.ts` | Scrapes every healthy deployment every 2 s (both backends) and turns the text into displayable metrics. |
 | `lib/hf/cache.ts` | Native scan/delete of the Hugging Face cache; `config.json` parsing. |
 | `lib/hf/search.ts` | Hub API search and metadata. |
 | `lib/hf/download.ts` | Wraps the `hf` CLI, parsing tqdm output into progress. |
@@ -100,6 +111,7 @@ tested alone.
 | `lib/guidellm/argv.ts` | Builds the `guidellm run` command line. |
 | `lib/guidellm/runner.ts` | Runs benchmarks, ingests results, serves history. |
 | `lib/guidellm/ingest.ts` | Parses GuideLLM's report JSON; finds the saturation point. |
+| `lib/types.ts` | JSON-serialisable types shared across the server/client boundary. |
 
 ### Client
 
@@ -113,6 +125,9 @@ tested alone.
 | `lib/client/api.ts` | fetch wrapper that unwraps `{ error }`. |
 | `components/charts/Sparkline.tsx` | Canvas time-series for live data. |
 | `components/charts/XYChart.tsx` | SVG chart for static benchmark results. |
+| `components/shell/*` | App chassis: providers, command bar, headroom rail. |
+| `components/{dashboard,models,deployments,benchmarks,settings}/*` | One folder per screen. |
+| `lib/thermal.ts`, `lib/format.ts` | The colour ramp (§13) and number formatting. |
 
 ---
 
@@ -120,10 +135,10 @@ tested alone.
 
 Not aspiration — these are the specific mechanisms.
 
-**One sampler, many viewers.** A single 1 Hz `nvidia-smi` loop and one `/metrics`
-scrape per deployment, fanned out over SSE. An extra browser tab costs one more
-`enqueue()` call, not another subprocess. Verified with `pgrep -fc nvidia-smi`
-while three tabs are open: still one.
+**One sampler, many viewers.** A single 1 Hz `nvidia-smi` loop, and one
+`/metrics` scrape per deployment every 2 s, fanned out over SSE. An extra
+browser tab costs one more `enqueue()` call, not another subprocess: the number
+of `nvidia-smi` processes does not grow with the number of viewers.
 
 **One-shot `nvidia-smi`, not `-l 1`.** Loop mode looks cheaper but block-buffers
 its stdout when not attached to a tty, and ignores `stdbuf`; a piped `-l 1`
@@ -155,7 +170,8 @@ hundreds.
 
 ## 5. The vLLM option schema
 
-The centrepiece of "exhaustively specify all deployment settings".
+The centrepiece of "exhaustively specify all deployment settings". This section
+is about vLLM; llama.cpp takes a short curated list instead (§6).
 
 Hand-maintaining a list of vLLM's options would be wrong the day vLLM is
 upgraded. Instead the app runs `vllm serve --help=all` against the *installed*
@@ -200,8 +216,9 @@ changes between vLLM versions is a real hazard.
 
 `buildServeArgv()` produces both the preview shown in the UI and the argv the
 supervisor spawns. There is no second code path, so the preview cannot lie.
+llama.cpp follows the same rule with `buildLlamaArgv()`.
 `parseServeCommand()` is its inverse, letting an existing shell command be
-imported into the form.
+imported into the form. Import is vLLM-only.
 
 The invariant is only as good as its inputs: the preview once hardcoded
 `--host 127.0.0.1` while the supervisor passed the configured `serveHost`, so
@@ -236,6 +253,15 @@ not marked, so the tier degrades on upgrade rather than breaking. (0.26 dropped
               │ failed │        │ stopped │
               └────────┘        └─────────┘
 ```
+
+**Starts are serialised.** `start()` chains each launch onto the previous one,
+so port allocation, the busy-port check and registration happen as one step even
+when two requests arrive together. The VRAM guard runs earlier, in the route,
+and is not part of that step (§17).
+
+**Restart replays, it does not rebuild.** The run row stores the executable and
+argv as spawned. `restart` reuses both, with the same host and port, so a profile
+or setting edited since the launch cannot change what comes back up.
 
 **Why `starting` and `loading` are separate.** Weight loading, `torch.compile`
 and CUDA graph capture can take minutes, during which `/health` refuses
@@ -306,7 +332,7 @@ running a real model rather than by reading code:
   vLLM environment's site-packages, then the usual system paths.
 
 **Orphan reconciliation.** A PID file records live children. On boot, any that
-survived an unclean shutdown are signalled and their DB rows marked `crashed`.
+survived an unclean shutdown are sent SIGKILL and their DB rows marked `crashed`.
 Re-adopting them is not possible — their stdout is gone — so killing them is the
 honest outcome; it keeps the headroom rail truthful.
 
@@ -330,6 +356,31 @@ are *omitted* rather than defaulted, so the panel measures the deployment's
 behaviour and not ours; and the SSE reader buffers across chunk boundaries,
 since a JSON frame split by TCP is the standard way to truncate a response and
 blame the model.
+
+### Two backends, one supervisor
+
+llama.cpp was added without a second lifecycle. The supervisor owns ports, process
+groups, logs, status and persistence; only these points branch on `backend`:
+
+| Concern | vLLM | llama.cpp |
+|---|---|---|
+| Executable | `vllm` in `vllmBinDir` | `llamaExecutable`, else `llama-server`, else `llama` on `PATH` |
+| Argv | `buildServeArgv()`, any of the parsed options | `buildLlamaArgv()`, allow-list only: `ctx-size`, `gpu-layers`, `threads`, `parallel`, `batch-size`, `ubatch-size`, `mmproj` |
+| Model | HF repo id or path | `modelSource`: Hub repo plus quantization *or* filename, or a local `.gguf` |
+| Pre-flight | VRAM guard (§7) | `--version` and `--help` probe; local files must be readable |
+| Environment | venv `bin` on `PATH`, `CUDA_HOME`, `HF_HUB_CACHE` | `LLAMA_CACHE`; inherited `LLAMA_ARG_*` removed |
+| Healthy when | `/health` returns 2xx | 2xx *and* body `status == "ok"` |
+| Log phases | `lib/vllm/phase.ts` | `deploymentLogHint()` in `adapters.ts` |
+| Metrics | rates, quantiles, KV cache | token rates, running and deferred requests; the rest show "—" |
+
+**Why an allow-list.** The app owns the bind address, port, model source, alias
+and `--metrics`. Rejecting every unlisted option keeps a profile from overriding
+them. Before launch, each flag is also checked against the installed binary's
+`--help`, so an old build fails with a sentence instead of an exit code.
+
+**LFM3-Omni preset.** `LiquidAI/LFM3-Omni-2B-GGUF` launches with
+`--reasoning off --temp 0`, requires build b11960 / v0.8.0 or newer, and the chat
+proxy supplies a text-only system prompt when none is given.
 
 ---
 
@@ -371,9 +422,17 @@ both computed as zero — precisely the launch the guard rail exists to catch. T
 API returns HTTP 409 with `overridable: true`, and the UI offers "start anyway"
 rather than blocking outright.
 
+The guard applies to vLLM only, reads GPU 0, and is skipped when no GPU sample
+exists. llama.cpp launches bypass it: partial offload and GGUF sizing are outside
+this model.
+
 ---
 
 ## 8. Engine metrics
+
+Every healthy deployment is scraped every 2 s. The rest of this section describes
+vLLM; llama.cpp metrics are plain counter deltas and gauges
+(`lib/backends/llama-metrics.ts`).
 
 vLLM exposes Prometheus text at `/metrics`. Neither shape is directly
 displayable:
@@ -445,13 +504,16 @@ guidellm run
                                                # | throughput | constant,rate=N | poisson,rate=N
   --data       kind=synthetic_text,prompt_tokens=256,output_tokens=128
   --constraint kind=max_duration,seconds=30    # repeatable
+  --tokenizer  kind=huggingface_auto,model=<repo>   # when set
+  --seed       kind=static,value=<n>                # when set
   --output     kind=json,path=<run-dir>/benchmark.json
   --disable-console-interactive
 ```
 
-Version-pinned to **0.7.3**. Releases before this used
-`guidellm benchmark --rate-type`; the app asserts the installed version and
-surfaces a mismatch as a settings banner rather than a broken run. As with
+Written against **0.7.3**. Releases before this used
+`guidellm benchmark --rate-type`. Settings shows a banner when the installed
+version differs; the runner itself does not check, so a mismatched install still
+starts the run. As with
 vLLM, one builder produces both the preview and the spawned argv.
 
 ### Two traps, both handled
@@ -463,7 +525,8 @@ vLLM, one builder produces both the preview and the spawned argv.
    Hugging Face repo. Left alone the run dies seconds in with an opaque
    `OSError`. The API fills the tokenizer in from the real model id, and the
    form warns when it cannot. (Found by running a real benchmark against
-   `guidellm mock-server`.)
+   `guidellm mock-server`.) For a llama.cpp target the model is a GGUF repo or
+   a file, not a tokenizer, so synthetic runs require one explicitly.
 
 ### Result schema
 
@@ -502,16 +565,20 @@ SQLite, WAL, `synchronous = NORMAL` (durable enough for telemetry, much faster).
 
 | Table | Contents |
 |---|---|
-| `deployments` | Saved launch profiles; `flags` is JSON of non-default options only. |
-| `deployment_runs` | One row per launch: resolved argv, pid, status, timings, exit code, log path. |
+| `deployments` | Saved launch profiles; `flags` is JSON of non-default options only. `backend`, `model_source`. |
+| `deployment_runs` | One row per launch: resolved argv, pid, status, timings, exit code, log path, `backend`, `model`, `host`. |
 | `telemetry_samples` | `(ts, gpu_index)` primary key, `WITHOUT ROWID`. Pruned on boot past the retention window. |
-| `deployment_metrics` | `(ts, run_id)`, `WITHOUT ROWID`. Derived engine metrics. |
+| `deployment_metrics` | `(ts, run_id)`, `WITHOUT ROWID`. Derived engine metrics. Written, but not yet read or pruned. |
 | `benchmark_runs` | Config, argv, status, progress, timings, result path. |
 | `benchmark_results` | One row per strategy within a run — the flattened chart source. |
 | `downloads` | Repo, revision, status, bytes, message. |
 
 `WITHOUT ROWID` on the two time-series tables stores rows in primary-key order,
 which is exactly the order every range query reads them in.
+
+Migrations are forward-only. Migration 2 added the backend columns with
+`DEFAULT 'vllm'`, so existing profiles and history keep their meaning
+(`lib/server/db.test.ts`).
 
 ---
 
@@ -530,15 +597,18 @@ which is exactly the order every range query reads them in.
 
 ### Mutations
 
-`/api/deployments` (CRUD) · `/api/deployments/{start,stop,restart,history,chat}` ·
+`/api/deployments` + `/api/deployments/[id]` (profile CRUD) ·
+`/api/deployments/{start,stop,restart,history,chat}` ·
 `/api/models/{cache,search,detail,download}` · `/api/vram` · `/api/flags` ·
 `/api/benchmarks` + `/api/benchmarks/[id]{,/cancel}` · `/api/settings`
+
+Errors come back as `{ error }`. Streams send a comment ping every 15 s.
 
 Model repo ids contain slashes, so `/api/models/detail` takes `?repo=` rather
 than a path segment.
 
 `/api/deployments/chat` is the only route that streams a response body without
-being an SSE topic: it pipes vLLM's own `text/event-stream` straight through
+being an SSE topic: it pipes the engine's own `text/event-stream` straight through
 (section 6). Like `start`, `stop` and `restart` it takes a **run** id in the
 body, not a path segment — the neighbouring `/api/deployments/[id]` addresses a
 saved *profile*, a different id space entirely.
@@ -597,21 +667,29 @@ flat categorical teal, and the ramp is reserved for series with a real maximum
 
 ## 14. Testing
 
-144 tests over the logic that carries real risk of being subtly wrong, all
-against captured real-world fixtures rather than invented ones.
+170 tests in 12 suites, over the logic that carries real risk of being subtly
+wrong. Parsers are tested against captured real-world fixtures.
 
-| Suite | Fixture | Covers |
+| Suite | Tests | Covers |
 |---|---|---|
-| `vllm/parse-help.test.ts` | verbatim 1,818-line `--help=all` from vLLM 0.26.0 | all six signature shapes, wrapped defaults, type inference, group recovery, the comma-in-choices bug, value coercion |
-| `vllm/prometheus.test.ts` | vLLM-shaped exposition text | label parsing with embedded commas, histogram quantile interpolation and monotonicity, `+Inf` handling, counter-reset behaviour, windowed deltas |
-| `vram/estimate.test.ts` | granite-4.1-8b ground truth | 160 KiB/token, 15.6 GiB weights, fp8 KV doubling context, quantization savings, tensor-parallel division, fail-closed on unknown models |
-| `guidellm/guidellm.test.ts` | a real 0.7.3 report from `guidellm mock-server` | argv for every profile/data/constraint, seconds→ms conversion, saturation-point detection, malformed-report tolerance |
-| `vllm/host.test.ts` | bind addresses | wildcard → loopback for v4 and v6, bare IPv6 bracketing, every spelling of loopback for the exposure warning |
-| `vllm/chat.test.ts` | frames copied verbatim from a live 0.26 chat stream | unset parameters omitted while a zero temperature survives, the role-only opening frame and empty stop frame ignored, the trailing usage frame read, reassembly of a JSON frame and a UTF-8 character split across chunks, error-body unwrapping |
-| `settings.test.ts` | a temporary data dir | defaults written on first run, and a write by one module instance being seen by another — the staleness that let a changed bind address go unused |
+| `vllm/parse-help.test.ts` | 33 | verbatim 1,818-line `--help=all` from vLLM 0.26.0: all six signature shapes, wrapped defaults, type inference, group recovery, the comma-in-choices bug, value coercion |
+| `guidellm/guidellm.test.ts` | 29 | a real 0.7.3 report: argv for every profile/data/constraint, seconds→ms conversion, saturation point, malformed reports |
+| `vllm/chat.test.ts` | 26 | frames copied from a live 0.26 stream: unset parameters omitted while zero temperature survives, usage frame, JSON and UTF-8 split across chunks, error unwrapping |
+| `vllm/prometheus.test.ts` | 23 | embedded commas in labels, quantile interpolation, `+Inf`, counter resets, windowed deltas |
+| `vram/estimate.test.ts` | 22 | granite-4.1-8b ground truth, fp8 KV, quantization, tensor parallel, fail-closed |
+| `backends/llamacpp.test.ts` | 14 | argv for both invocation modes, rejected options, source selection, LFM3, counter metrics, log classification |
+| `vllm/host.test.ts` | 7 | wildcard → loopback for v4 and v6, IPv6 bracketing, loopback spellings |
+| `deployments/supervisor.test.ts` | 5 | lifecycle against fixture processes and real ports: healthy, faithful restart, busy port, failure/timeout/crash, group kill, both backends at once |
+| `settings.test.ts` | 5 | defaults, cross-instance and hand edits, new keys added to old files |
+| `api/deployments/chat/route.test.ts` | 3 | pass-through, upstream errors, cancellation |
+| `backends/runtime.test.ts` | 2 | local file validation, old-build rejection |
+| `server/db.test.ts` | 1 | v1 → v2 migration without data change |
 
-The supervisor is not unit-tested against a real 16 GiB model load; it was
-verified end-to-end instead (section 15).
+The supervisor tests use stand-in processes. Behaviour under a real 16 GiB model
+load was verified end-to-end instead (section 15).
+
+`tools/e2e.mjs` (real vLLM) and `tools/llamacpp-e2e.mjs` (protocol fixture, no
+real inference) drive the built UI with Playwright.
 
 Run: `npm test` · `npm run typecheck` · `npm run lint`.
 
@@ -619,8 +697,11 @@ Run: `npm test` · `npm run typecheck` · `npm run lint`.
 
 ## 15. Verification performed
 
-Static checks: clean production build (33 routes), 144 passing tests, clean
-`tsc --noEmit` and `eslint`.
+**Re-checked 2026-11-26:** 170 passing tests, clean `tsc --noEmit` and `eslint`.
+The production build and the browser walkthroughs were not re-run.
+
+Everything below is the record from the August 2026 vLLM verification, at the
+code and port of that time. None of it covers llama.cpp or the container.
 
 ### End-to-end, against a real served model
 
@@ -722,10 +803,39 @@ and VRAM returned to baseline.
 
 ---
 
-## 16. Known limitations
+## 16. Running it: bare Node or container
 
-- **No authentication.** The app itself binds to loopback and assumes a single
-  trusted user. It must not be exposed to a network. Deployments bind to
+**Bare Node.** `npm run dev` or `npm run build && npm start`, port 3333. Neither
+script passes `-H`, so Next listens on its default, `0.0.0.0`.
+
+**Container** (`Dockerfile`, `compose.yaml`, deployed as a Coolify compose
+resource). The app is a supervisor of *host* binaries, so the container is
+deliberately not isolated:
+
+| Choice | Why |
+|---|---|
+| `network_mode: host` | deployments bind and are dialled on host ports |
+| `pid: host` | VRAM attribution walks `/proc` ancestry; `nvidia-smi` reports pids (§8) |
+| `/home/dewardvide` mounted read-write at the same path | the vLLM venv, llama.cpp, `guidellm`, `hf`, the HF cache and token are used in place |
+| GPU through the CDI spec (`nvidia.com/gpu=all`) | injects device nodes, driver libraries and `nvidia-smi` |
+| runtime base `ubuntu:26.04` | host binaries need the host's glibc; a bookworm runtime rejects them |
+| build on `node:22-bookworm-slim`, `output: "standalone"` | the build output runs forward onto the newer glibc; only the Node binary is copied |
+| user `1000:1000` | owns the mounted home, so downloads are writable |
+| app state in the `vllm-admin-data` volume at `/data` | via `VLLM_ADMIN_DATA_DIR` |
+
+Paths and the uid are specific to this workstation. Anything installed outside
+the mounted home (a system-wide llama.cpp, for instance) is invisible inside the
+container. The healthcheck requests `/`.
+
+---
+
+## 17. Known limitations
+
+- **No authentication, and the app listens on every interface.** It assumes a
+  single trusted user, but `dev`, `start` and the container (`HOSTNAME=0.0.0.0`
+  on the host network) all bind `0.0.0.0`. Do not run it where untrusted hosts
+  can reach the port. `-H 127.0.0.1` in the scripts and `HOSTNAME=127.0.0.1` in
+  the container restrict it to loopback. Deployments are separate: they bind to
   `serveHost`, which can be widened to `0.0.0.0` or a specific interface —
   Settings warns whenever that is not a loopback address, because the vLLM
   endpoints it starts are unauthenticated unless `--api-key` is set.
@@ -735,6 +845,20 @@ and VRAM returned to baseline.
   the page. The panel is an instrument for checking that a deployment answers
   sensibly, not a chat client with history — persisting them would mean a schema,
   a history list and a retention policy for something read once.
+- **The container has broad host access** (§16): host network and processes, and
+  the whole home directory read-write.
+- **The HF token appears in `hf download`'s argv** (`--token`), so it is visible
+  in the process list while a download runs.
+- **The VRAM guard is checked once, in the start route.** Restart does not repeat
+  it, and two simultaneous starts can both pass.
+- **Orphan cleanup trusts the PID file.** It does not confirm a recorded pid is
+  still the process that was spawned before killing its group.
+- **`deployment_metrics` grows without bound** and nothing reads it yet; only
+  `telemetry_samples` is pruned.
+- **llama.cpp is deliberately narrow:** no VRAM estimate, a short option list, no
+  latency percentiles, no app-managed GGUF downloads.
+- **`healthy` is never revoked.** Health polling only promotes. A deployment
+  that stops answering stays `healthy` until its process exits.
 - **The chat proxy sends no `--api-key`.** A deployment started with one will
   reject the panel's requests with a 401. The route is the obvious single place
   to add it, and the error is reported verbatim rather than swallowed.
