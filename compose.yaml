@@ -6,8 +6,10 @@
 # `nvidia-smi`. So the container shares the host's network and PID namespace and
 # bind-mounts the host userland it needs. Anything less and half the UI is dead.
 #
-# Requires: NVIDIA driver + device nodes on the host (no nvidia-container-toolkit
-# needed — devices and libcuda/libnvidia-ml are mounted directly).
+# Requires: NVIDIA driver + the NVIDIA Container Toolkit with a generated CDI
+# spec (`nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`). The GPU comes
+# in through the CDI device below, which injects the device nodes, the driver
+# libraries and nvidia-smi — so no host userland mount is needed for the GPU.
 #
 # Environment:
 #   PORT            3333   listen port (host network, so this is the real port)
@@ -27,22 +29,15 @@ services:
       HOME: /home/dewardvide
       PATH: /home/dewardvide/.local/bin:/home/dewardvide/granite-inference/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       HF_TOKEN: ${HF_TOKEN:-}
+    # GPU via the CDI spec: device nodes + driver libs + nvidia-smi, per-driver.
     devices:
-      - /dev/nvidia0
-      - /dev/nvidiactl
-      - /dev/nvidia-uvm
-      - /dev/nvidia-uvm-tools
-      - /dev/nvidia-modeset
-      - /dev/dri
+      - nvidia.com/gpu=all
     volumes:
       # App state
       - vllm-admin-data:/data
       # Host userland the supervisor launches: venv, uv-managed python, llama.cpp,
       # guidellm, HF cache, hf token. Read-write because downloads write the cache.
       - /home/dewardvide:/home/dewardvide
-      # NVIDIA driver libraries and the nvidia-smi binary the VRAM gauge calls.
-      - /usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:ro
-      - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3333/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
